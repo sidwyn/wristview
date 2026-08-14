@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Run outputs. Every run directory holds thousands of extracted frames and a
+# trained splat. Reproduce them with `wristview run`, do not commit them.
+runs/
+
+# Generated test fixture. Rebuild with `python -m tools.make_fixture`.
+fixtures/
+
+# Model weights, downloaded on first use.
+models/
+pretrained_models/
+
+# Source footage. Large binaries do not belong in git without LFS.
+# The clips live in wristview-videos/ locally; the README says what to put there.
+wristview-videos/*.mov
+wristview-videos/*.mp4
+wristview-videos/*.MOV
+wristview-videos/*.MP4
+
+.DS_Store

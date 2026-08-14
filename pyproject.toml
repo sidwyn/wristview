@@ -1,0 +1,65 @@
+[project]
+name = "wristview"
+version = "0.1.0"
+description = "Egocentric head-mounted video in, robot wrist-camera training views out."
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "opencv-python>=4.9",
+    "pyyaml>=6.0",
+    "tqdm>=4.66",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.4.9",
+    "pillow>=10.0",
+    "torch>=2.4",
+    "torchvision>=0.19",
+    "pycolmap>=0.6",
+    "mediapipe>=0.10",
+    "trimesh>=4.0",
+    "yourdfpy>=0.0.5",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+# Installed from git; see BUILD-LOG.md. Kept optional so the pipeline degrades
+# to pycolmap SIFT when they are absent.
+matching = [
+    "lightglue",
+    "hloc",
+]
+# Large model weights. Every one of these has a documented fallback.
+perception = [
+    "transformers>=4.40",
+    "safetensors",
+    "huggingface-hub",
+]
+
+[project.scripts]
+wristview = "wristview.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wristview"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
