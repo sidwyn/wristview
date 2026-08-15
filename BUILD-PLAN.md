@@ -22,6 +22,51 @@
 
 **Caveat on A3:** the test object was a transparent glass, so fingers stayed partly visible through it. Occlusion was partial. An opaque object is the harder case and is untested.
 
+### Capture sessions
+
+Three sessions, and the difference between them is entirely capture technique.
+The pipeline code that processed session 1 and session 3 is the same code.
+
+| | Session 1 · 14 Aug | Session 2 · 15 Aug, 10am | Session 3 · 15 Aug, 11am |
+|---|---|---|---|
+| Scan | wide oblique orbit only | 40 s, 15 s close pass (37%) | 30 s, 18 s close pass (60%) |
+| Demo-to-scan raw matches | **126** | **212** | **436** |
+| Scan self-match ceiling | 700+ | 549 | 572 |
+| Pre-flight ratio | — (below 0.25) | **0.39** | **0.76** |
+| Verdict | fail | marginal, under the 0.40 mark | **pass, five of five clips** |
+| ArUco in scan | none in scene | 124 of 224 (55%) | 114 of 193 (59%) |
+| ArUco in demo | none in scene | **0 of 143 (0%)** | **199 of 205 (97%)** |
+| Stage 1 registration | 172 of 172 | 224 of 224 | 193 of 193 |
+| Stage 2 outcome | all episodes rejected | not run | see run summary |
+
+**What changed between them, and what it bought:**
+
+- **1 → 2.** Added a close top-down pass at demo framing, and a marker for
+  metric scale. Raw matches 126 → 212. Still marginal, because the demo saw
+  almost nothing but repetitive wood grain.
+- **2 → 3.** Added static texture to the workspace, moved the marker to within
+  5 to 10 cm of the object so it stays inside the demo crop, and raised the
+  close-pass fraction from 37% to 60%. Raw matches 212 → 436, ratio 0.39 → 0.76.
+
+**Two measurements worth keeping, both from session 3:**
+
+Of the 64 scan frames the demo matched best, **0% came from the wide orbit and
+100% from the close pass**, median position 76% into the scan timeline. The
+wide orbit earns its place by giving the splat a background, not by helping
+localization.
+
+Of the demo features that matched, **63% came from added structure**: 41.4%
+from the marker sheet, 22.0% from the keyboard, 36.6% from desk and wood
+grain. Removing the marker sheet alone would drop the ratio to about 0.45.
+
+**Why session 1 was dangerous rather than merely bad.** Stage 2 reported
+**100% of frames registered** on it, and produced camera trajectories of 85 m
+across a 0.69 m desk at 9.7 m/s. Registration rate is not a correctness
+signal. Both checks that now catch this, the pre-flight ratio and the
+physical-plausibility test, exist because of that session. See `src/wristview/qc.py`
+for the thresholds and the evidence recorded beside each one, and
+`CAPTURE-SOP.md` for the procedure that avoids it.
+
 **Sequencing:** see `wristview-runbook.md`. Path A there is two hours and produces the evidence needed at Actuate on 18 August. This build is Path B, and it can run unattended in parallel.
 
 ## Environment

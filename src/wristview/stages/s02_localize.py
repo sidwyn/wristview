@@ -22,6 +22,7 @@ from ..camera import Intrinsics
 from ..device import resolve as resolve_device
 from ..geometry import slerp_fill, smooth_poses
 from ..logging_setup import get
+from ..qc import estimate_marker_world_pose, marker_agreement, marker_gates, preflight_gate
 from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
 
 log = get(__name__)
@@ -50,6 +51,33 @@ def _motion_diagnostics(poses: np.ndarray, valid: np.ndarray, fps: float) -> dic
     }
 
 
+def _match_counts(path, pairs: list[tuple[str, str]]) -> list[int]:
+    """Raw match counts for a list of pairs, skipping any that were not run."""
+    import h5py
+
+    counts: list[int] = []
+    with h5py.File(str(path), "r", libver="latest") as handle:
+        for name0, name1 in pairs:
+            key = sfm.names_to_pair(name0, name1)
+            if key in handle:
+                counts.append(int((handle[key]["matches0"][()] != -1).sum()))
+    return counts
+
+
+def _scan_self_match_ceiling(ctx: RunContext, scan_names: list[str]) -> float:
+    """How well the scan matches itself, neighbour to neighbour.
+
+    The ceiling this footage supports. Comparing a demo against it cancels
+    texture, resolution and keypoint budget, which an absolute count does not.
+    """
+    matches_path = ctx.stage_dir(1, create=False) / "matches.h5"
+    if not matches_path.exists() or len(scan_names) < 2:
+        return 0.0
+    pairs = list(zip(scan_names[:-1], scan_names[1:], strict=False))
+    counts = _match_counts(matches_path, pairs)
+    return float(np.median(counts)) if counts else 0.0
+
+
 def _localize_episode(
     ctx: RunContext,
     rec: StageRecorder,
@@ -62,6 +90,8 @@ def _localize_episode(
     scan_descriptors: np.ndarray,
     device: str,
     cfg: dict,
+    scan_self_matches: float = 0.0,
+    marker_world: np.ndarray | None = None,
 ) -> dict:
     """Register one demo episode against the scan reconstruction."""
     import pycolmap
@@ -103,6 +133,20 @@ def _localize_episode(
                 pairs, features_path, matches_path, device,
                 features_ref_path=ctx.stage_dir(1, create=False) / "features.h5",
             )
+
+    # Viewpoint overlap, measured from the matches just computed. Same
+    # quantity the standalone preflight reports, so a batch cannot reach
+    # Stage 3 without the check that would have caught a bad capture.
+    median_demo_matches = None
+    per_frame_best: list[int] = []
+    for name in frame_names:
+        refs = [r for q, r in pairs if q == name]
+        if refs:
+            counts = _match_counts(matches_path, [(name, r) for r in refs])
+            if counts:
+                per_frame_best.append(max(counts))
+    if per_frame_best:
+        median_demo_matches = float(np.median(per_frame_best))
 
     lookup = sfm.build_keypoint_to_point3d(reconstruction)
 
@@ -276,6 +320,46 @@ def _localize_episode(
     np.save(poses_path, smoothed)
     np.save(out_dir / "pose_valid.npy", valid)
 
+    # Independent check. The marker solves the camera pose from four coplanar
+    # corners whose spacing is a physical measurement; Stage 2 solves it from
+    # hundreds of triangulated scene points. They share only the intrinsics,
+    # so agreement is evidence from two directions and disagreement means at
+    # least one is wrong.
+    gates: list = []
+    agreement: dict = {}
+    scale_cfg = ctx.config.section("scene").get("scale", {})
+    marker_length = scale_cfg.get("aruco_marker_length_m")
+    if marker_length and valid.any():
+        with rec.timed(f"marker_check.{clip_id}"):
+            agreement = marker_agreement(
+                frames_dir, frame_names, smoothed, valid, intrinsics,
+                side_m=float(marker_length),
+                dictionary_name=scale_cfg.get("aruco_dict", "DICT_4X4_50"),
+                marker_id=int(scale_cfg.get("aruco_marker_id") or 0),
+                # From the scan, never from the demo poses under test.
+                marker_world=marker_world,
+            )
+        gates.extend(marker_gates(agreement))
+        if agreement.get("frames"):
+            log.info(
+                "%s: marker agrees with the recovered pose to %.2f cm and %.2f deg "
+                "median over %d frames (p90 %.2f cm, %.2f deg)",
+                clip_id, agreement["position_median_cm"], agreement["rotation_median_deg"],
+                agreement["frames"], agreement["position_p90_cm"],
+                agreement["rotation_p90_deg"],
+            )
+        else:
+            log.warning("%s: no independent marker check available (%s)",
+                        clip_id, agreement.get("reason", "unknown"))
+
+    # Viewpoint overlap, from the matches this stage already computed.
+    if median_demo_matches is not None and scan_self_matches:
+        gates.append(preflight_gate(median_demo_matches, scan_self_matches))
+
+    failed_gates = [g.name for g in gates if not g.passed]
+    if failed_gates:
+        log.warning("%s: QC gates failed: %s", clip_id, ", ".join(failed_gates))
+
     status = {
         "clip_id": clip_id,
         "frame_count": len(frame_names),
@@ -289,6 +373,9 @@ def _localize_episode(
         "median_correspondences": int(np.median(correspondence_counts[valid])) if valid.any() else 0,
         "inlier_ratio": round(inlier_ratio, 4),
         "motion": motion,
+        "marker_agreement": agreement,
+        "qc_gates": [g.to_dict() for g in gates],
+        "qc_failed": failed_gates,
         "implausible": implausible,
         "geometrically_valid": not implausible,
         "scene_span_m": scene_span_m,
@@ -351,6 +438,33 @@ def run(ctx: RunContext) -> dict:
         scan_names = scan["frame_names"]
         with rec.timed("scan_descriptors"):
             scan_descriptors = sfm.global_descriptors(scan_frames_dir, scan_names)
+        with rec.timed("scan_self_match"):
+            scan_self_matches = _scan_self_match_ceiling(ctx, scan_names)
+        log.info("scan self-match ceiling: %.0f features", scan_self_matches)
+        rec.metric("scan_self_match_ceiling", scan_self_matches)
+
+        # The marker's world pose, fixed by the scan. Every demo is checked
+        # against this rather than against itself.
+        marker_world = None
+        scale_cfg_top = ctx.config.section("scene").get("scale", {})
+        if scale_cfg_top.get("aruco_marker_length_m"):
+            scan_poses_payload = read_json(ctx.stage_dir(1, create=False) / "cameras.json")
+            names = [f["name"] for f in scan_poses_payload["frames"]]
+            poses = np.array([f["pose_world_from_cam"] for f in scan_poses_payload["frames"]])
+            with rec.timed("marker_world"):
+                marker_world = estimate_marker_world_pose(
+                    scan_frames_dir, names, poses, np.ones(len(names), bool),
+                    Intrinsics.from_dict(scan_poses_payload["intrinsics"]),
+                    float(scale_cfg_top["aruco_marker_length_m"]),
+                    scale_cfg_top.get("aruco_dict", "DICT_4X4_50"),
+                    int(scale_cfg_top.get("aruco_marker_id") or 0),
+                )
+            if marker_world is None:
+                log.warning("marker not solvable from the scan; demo checks will be weaker")
+            else:
+                log.info("marker world position from scan: %s",
+                         marker_world[:3, 3].round(4).tolist())
+                rec.metric("marker_world_position", marker_world[:3, 3].round(5).tolist())
 
         statuses = {}
         for clip_id, clip in manifest["clips"].items():
@@ -361,6 +475,7 @@ def run(ctx: RunContext) -> dict:
             statuses[clip_id] = _localize_episode(
                 ctx, rec, clip_id, clip, intrinsics, reconstruction,
                 scan_names, scan_frames_dir, scan_descriptors, device, cfg,
+                scan_self_matches=scan_self_matches, marker_world=marker_world,
             )
             rec.output(f"{clip_id}_poses", ctx.episode_dir(STAGE, clip_id) / "camera_poses.npy")
 

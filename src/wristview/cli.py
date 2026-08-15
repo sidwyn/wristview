@@ -165,7 +165,7 @@ def _summarize(ctx: RunContext, results: dict) -> None:
 
 def command_run(args: argparse.Namespace) -> int:
     scan = Path(args.scan).resolve()
-    demos = [Path(p).resolve() for p in args.demos]
+    demos = [Path(p).resolve() for p in (args.demos or [])]
     if not scan.exists():
         print(f"scan video not found: {scan}", file=sys.stderr)
         return 2
@@ -371,7 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="run the pipeline end to end")
     run_parser.add_argument("--scan", required=True, help="room scan video")
-    run_parser.add_argument("--demos", required=True, nargs="+", help="demo videos")
+    run_parser.add_argument(
+        "--demos", nargs="*", default=[],
+        help="demo videos. Optional, so a scan can be reconstructed and scaled "
+             "on its own before any demo exists.",
+    )
     run_parser.add_argument("--out", default="runs", help="directory to hold run folders")
     run_parser.add_argument("--run-id", default=None)
     run_parser.add_argument("--config", default=None, help="YAML config layered over the default")

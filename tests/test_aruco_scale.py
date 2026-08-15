@@ -179,8 +179,11 @@ class TestArucoScale:
         """Unregistered frames must be skipped, not crash the fit."""
         frames_dir, names, poses = scene
         partial = {k: v for k, v in list(poses.items())[:4]}
+        # min_detections is lowered deliberately: this test is about skipping
+        # frames with no pose, not about the detection floor.
         result = _fit_aruco_scale(
-            frames_dir, names, partial, intrinsics, DICT, SIDE_METRES
+            frames_dir, names, partial, intrinsics, DICT, SIDE_METRES,
+            min_detections=3,
         )
         assert result is not None
         assert result[0] == pytest.approx(EXPECTED_SCALE, rel=0.05)
@@ -189,3 +192,53 @@ class TestArucoScale:
         frames_dir, names, poses = scene
         one = {names[0]: poses[names[0]]}
         assert _fit_aruco_scale(frames_dir, names, one, intrinsics, DICT, SIDE_METRES) is None
+
+    def test_rejects_a_marker_seen_too_rarely(self, scene, intrinsics):
+        """A handful of detections is a misdetection, not a measurement."""
+        frames_dir, names, poses = scene
+        assert _fit_aruco_scale(
+            frames_dir, names, poses, intrinsics, DICT, SIDE_METRES,
+            min_detections=999,
+        ) is None
+
+    def test_returns_none_when_the_configured_id_is_absent(self, scene, intrinsics):
+        frames_dir, names, poses = scene
+        assert _fit_aruco_scale(
+            frames_dir, names, poses, intrinsics, DICT, SIDE_METRES, marker_id=42
+        ) is None
+
+    def test_one_marker_sets_the_scale_not_the_average(self, tmp_path, intrinsics):
+        """The real failure: a spurious second id must not move the answer.
+
+        A capture produced a genuine id 0 in 114 frames at 300 px alongside a
+        spurious id 17 in 8 frames at 29 px. Averaging the two gave 0.0857 m
+        per unit against a true 0.0596, a 44 percent error.
+        """
+        frames_dir = tmp_path / "two"
+        frames_dir.mkdir()
+        dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, DICT))
+        decoy = cv2.aruco.generateImageMarker(dictionary, 17, 120)
+
+        names, poses = [], {}
+        for index in range(10):
+            angle = index / 10 * 2 * np.pi
+            pose = look_at(
+                np.array([4.0 * np.cos(angle), 4.0 * np.sin(angle), 5.0]), np.zeros(3)
+            )
+            image = render_marker(pose, intrinsics)
+            # A small decoy marker in a corner, far too small to be the real one.
+            image[8:68, 8:68] = cv2.cvtColor(
+                cv2.resize(decoy, (60, 60)), cv2.COLOR_GRAY2BGR
+            )
+            name = f"two_{index:03d}.png"
+            cv2.imwrite(str(frames_dir / name), image)
+            names.append(name)
+            poses[name] = pose
+
+        scale, _, diagnostics = _fit_aruco_scale(
+            frames_dir, names, poses, intrinsics, DICT, SIDE_METRES, min_detections=3
+        )
+        assert diagnostics["marker_id"] == MARKER_ID, "the wrong marker set the scale"
+        assert scale == pytest.approx(EXPECTED_SCALE, rel=0.05), (
+            f"a spurious marker moved the scale: {scale:.5f} against {EXPECTED_SCALE:.5f}"
+        )

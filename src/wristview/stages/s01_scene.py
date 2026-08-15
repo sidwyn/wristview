@@ -112,12 +112,24 @@ def _fit_aruco_scale(
     intrinsics: Intrinsics,
     dictionary_name: str,
     marker_length_m: float,
+    marker_id: int | None = None,
+    min_detections: int = 10,
 ) -> tuple[float, np.ndarray, dict] | None:
     """Recover scale from a printed marker of known size.
 
     Detect the marker in registered frames, triangulate its corners with the
     COLMAP poses, then compare the measured side length against the printed
     one.
+
+    Only one marker sets the scale. Averaging across marker ids is wrong: a
+    real capture produced a spurious id 17 in 8 frames at 29 px alongside the
+    genuine id 0 in 114 frames at 300 px, and taking the median of both gave
+    0.0857 m per unit against a true 0.0596, a 44 percent error. Every extra
+    id is either a different marker of unknown size or a misdetection, and
+    neither belongs in the estimate.
+
+    `marker_id` pins which one to trust. Without it the most-detected id
+    wins, and anything seen in fewer than `min_detections` frames is dropped.
     """
     try:
         dictionary = cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, dictionary_name))
@@ -136,8 +148,11 @@ def _fit_aruco_scale(
         corners, ids, _ = detector.detectMarkers(image)
         if ids is None:
             continue
-        for marker_id, corner in zip(ids.ravel(), corners, strict=True):
-            observations.setdefault(int(marker_id), []).append(
+        # Named `detected_id`, not `marker_id`: reusing the parameter name
+        # here shadowed the caller's argument, so the configured id was
+        # silently replaced by whichever id happened to be seen last.
+        for detected_id, corner in zip(ids.ravel(), corners, strict=True):
+            observations.setdefault(int(detected_id), []).append(
                 (corner.reshape(4, 2), colmap_poses[name])
             )
 
@@ -145,10 +160,39 @@ def _fit_aruco_scale(
         log.info("no ArUco marker found in the scan frames")
         return None
 
+    counts = {mid: len(v) for mid, v in sorted(observations.items())}
+    log.info("ArUco ids seen in registered scan frames: %s", counts)
+
+    if marker_id is not None:
+        if marker_id not in observations:
+            log.warning(
+                "configured ArUco id %d was never detected; ids seen were %s",
+                marker_id, sorted(observations),
+            )
+            return None
+        chosen = marker_id
+    else:
+        chosen = max(observations, key=lambda m: len(observations[m]))
+
+    rejected = {m: c for m, c in counts.items() if m != chosen}
+    if rejected:
+        log.warning(
+            "using ArUco id %d (%d detections) for scale and ignoring %s. "
+            "Only one marker of known size may set the scale.",
+            chosen, counts[chosen], rejected,
+        )
+    if counts[chosen] < min_detections:
+        log.warning(
+            "ArUco id %d was detected in only %d frames, below the %d needed "
+            "to trust it",
+            chosen, counts[chosen], min_detections,
+        )
+        return None
+
     matrix = intrinsics.matrix
     lengths: list[float] = []
-    for marker_id, views in observations.items():
-        if len(views) < 2:
+    for marker_id_seen, views in observations.items():
+        if marker_id_seen != chosen or len(views) < 2:
             continue
         corners3d = []
         for corner_index in range(4):
@@ -167,7 +211,7 @@ def _fit_aruco_scale(
             np.linalg.norm(corners3d[i] - corners3d[(i + 1) % 4]) for i in range(4)
         ]
         lengths.append(float(np.mean(sides)))
-        log.info("marker %d: mean side %.5f in COLMAP units", marker_id, lengths[-1])
+        log.info("marker %d: mean side %.5f in COLMAP units", marker_id_seen, lengths[-1])
 
     if not lengths:
         return None
@@ -180,7 +224,10 @@ def _fit_aruco_scale(
     transform = sim3_matrix(scale, np.eye(3), np.zeros(3))
     diagnostics = {
         "method": "aruco",
-        "markers": len(lengths),
+        "marker_id": chosen,
+        "detections": counts[chosen],
+        "ids_seen": counts,
+        "ids_ignored": rejected,
         "measured_side_colmap_units": measured,
         "known_side_m": marker_length_m,
         "note": "Scale only. ArUco fixes size but not the world orientation or origin.",
@@ -453,11 +500,18 @@ def run(ctx: RunContext) -> dict:
         # ---- incremental mapping -----------------------------------------
         sfm_dir = out_dir / "colmap"
         sparse_dir = sfm_dir / "sparse"
+        # The raw reconstruction is cached separately from the metric one.
+        # `sparse` is written after the Sim(3) is applied, so reusing it as
+        # the mapping cache re-scales an already-scaled model: the marker
+        # measured 1.678 units on the first run and 0.144 on the second,
+        # which is exactly 1.678 times the 0.0857 scale the first run
+        # applied. Caching the raw model keeps Stage 1 idempotent.
+        raw_dir = sfm_dir / "sparse_raw"
         with rec.timed("mapping"):
-            if not force and (sparse_dir / "cameras.bin").exists():
+            if not force and (raw_dir / "cameras.bin").exists():
                 import pycolmap
 
-                reconstruction = pycolmap.Reconstruction(str(sparse_dir))
+                reconstruction = pycolmap.Reconstruction(str(raw_dir))
                 log.info(
                     "reusing existing reconstruction: %d registered images",
                     reconstruction.num_reg_images(),
@@ -468,6 +522,8 @@ def run(ctx: RunContext) -> dict:
                     sfm_dir, frames_dir, pairs_path, features_path, matches_path,
                     intrinsics=intrinsics_raw, image_list=frame_names,
                 )
+                raw_dir.mkdir(parents=True, exist_ok=True)
+                reconstruction.write(str(raw_dir))
         if reconstruction is None:
             raise RuntimeError(
                 "COLMAP mapping produced no model. The scan did not reconstruct. "
@@ -549,6 +605,8 @@ def run(ctx: RunContext) -> dict:
                     frames_dir, frame_names, poses, intrinsics,
                     scale_cfg.get("aruco_dict", "DICT_4X4_50"),
                     float(scale_cfg.get("aruco_marker_length_m", 0.15)),
+                    marker_id=scale_cfg.get("aruco_marker_id"),
+                    min_detections=int(scale_cfg.get("aruco_min_detections", 10)),
                 )
 
         if scale_result is None and source in ("auto", "known_object"):

@@ -73,6 +73,11 @@ scene:
     source: auto
     aruco_dict: DICT_4X4_50
     aruco_marker_length_m: 0.15
+    # Which marker sets the scale. null means the most-detected id. Averaging
+    # across ids is never right: a spurious id 17 seen in 8 frames alongside
+    # the genuine id 0 in 114 gave a 44 percent scale error.
+    aruco_marker_id: null
+    aruco_min_detections: 10
     # Metric scale from something already in the shot, when there is no ARKit
     # trajectory and no printed marker. Name it and give one real dimension.
     #
