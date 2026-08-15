@@ -297,11 +297,22 @@ def run(ctx: RunContext) -> dict:
 
         # ---- incremental mapping -----------------------------------------
         sfm_dir = out_dir / "colmap"
+        sparse_dir = sfm_dir / "sparse"
         with rec.timed("mapping"):
-            reconstruction = sfm.run_reconstruction(
-                sfm_dir, frames_dir, pairs_path, features_path, matches_path,
-                intrinsics=intrinsics_raw, image_list=frame_names,
-            )
+            if not force and (sparse_dir / "cameras.bin").exists():
+                import pycolmap
+
+                reconstruction = pycolmap.Reconstruction(str(sparse_dir))
+                log.info(
+                    "reusing existing reconstruction: %d registered images",
+                    reconstruction.num_reg_images(),
+                )
+                rec.note("reconstruction reused from a previous run")
+            else:
+                reconstruction = sfm.run_reconstruction(
+                    sfm_dir, frames_dir, pairs_path, features_path, matches_path,
+                    intrinsics=intrinsics_raw, image_list=frame_names,
+                )
         if reconstruction is None:
             raise RuntimeError(
                 "COLMAP mapping produced no model. The scan did not reconstruct. "
@@ -447,12 +458,20 @@ def run(ctx: RunContext) -> dict:
         rec.metric("scale_factor", float(scale))
 
         # A sanity check a human can read: how big is the reconstructed room.
+        # Reported at the 2nd and 98th percentile, because a sparse cloud
+        # always has a few far outliers and the raw bounding box tracks those
+        # rather than the room. Labelled by whether the scale is real.
         if len(metric_points):
-            extent = metric_points.max(axis=0) - metric_points.min(axis=0)
+            low = np.percentile(metric_points, 2, axis=0)
+            high = np.percentile(metric_points, 98, axis=0)
+            extent = high - low
+            unit = "m" if diagnostics["method"] != "none" else "units (UNSCALED)"
             log.info(
-                "metric scene extent: %.2f x %.2f x %.2f m", extent[0], extent[1], extent[2]
+                "scene extent (2nd to 98th percentile): %.2f x %.2f x %.2f %s",
+                extent[0], extent[1], extent[2], unit,
             )
-            rec.metric("scene_extent_m", [round(float(v), 3) for v in extent])
+            rec.metric("scene_extent", [round(float(v), 3) for v in extent])
+            rec.metric("scene_extent_unit", "m" if diagnostics["method"] != "none" else "colmap")
 
         # ---- artifacts ----------------------------------------------------
         cameras_payload = {
@@ -470,7 +489,10 @@ def run(ctx: RunContext) -> dict:
         _write_ply(ply_path, metric_points, colors)
         rec.output("scene_ply", ply_path)
 
-        reconstruction.write(str(sfm_dir / "sparse"))
+        # pycolmap refuses to write into a directory that does not exist.
+        sparse_dir = sfm_dir / "sparse"
+        sparse_dir.mkdir(parents=True, exist_ok=True)
+        reconstruction.write(str(sparse_dir))
         rec.output("colmap_model", sfm_dir / "sparse")
         rec.output("features", features_path)
         rec.output("matches", matches_path)
