@@ -127,12 +127,52 @@ twenty minutes; retraining the splat should not pay for it again. Override with
 
 ## Bugs found by tests, not by looking at output
 
+Three of these are in the splat rasterizer, which is the one component with no
+upstream to fall back on. Every convention in it had to be got right locally,
+and two of the three produced plausible but degraded output rather than a
+crash. That is the dangerous failure mode: a thin splat reads as "splatting is
+hard at close range", not as a unit error.
+
+**Densification never fired, so the splat could not grow.** Adaptive density
+control is most of what makes 3DGS work. This rasterizer projects to pixels, so
+the accumulated screen-space gradient is per-pixel, while
+`densify_grad_threshold` follows the 3DGS convention and is calibrated against
+normalized device coordinates, where the image spans [-1, 1]. The two differ by
+half the image size, about 300x at 720p. Measured on the real scan:
+
+```
+mean screen-space gradient, pixel units   1.1e-07
+configured threshold                      4.0e-04
+Gaussians ever qualifying                 0
+```
+
+The room splat sat at its 13,066 initial points for a thousand steps and only
+shrank as pruning removed some, logging `+0 cloned, +0 split, -94 pruned`.
+After converting to NDC in `accumulate`, the same scan grows 13,066 to 14,196
+to 17,966 to 20,861 over the first six hundred steps. The conversion also makes
+the threshold independent of training resolution.
+
 **Splat depth ordering.** The guard against runaway Gaussians clamped a
 Gaussian's tile span by moving its far corner to its near corner, collapsing it
 onto a single tile so it vanished from the rest of its own footprint. A
 Gaussian that fills the frame is not degenerate when the Stage 5 wrist camera
 sits centimetres from a surface. The symptom was near geometry disappearing
 behind far geometry. The clamp is now centred on the Gaussian.
+
+**Grasp thresholds could never latch on this footage.** WiLoR measures the
+thumb-index width at 12.2 cm with the hand open and 5.8 cm wrapped around the
+glass. The configured `close_distance_m` was 4.5 cm, below the wrapped width,
+so the Schmitt trigger never fired and every episode would have reported no
+grasp at all, with no error anywhere. Thresholds now come from each episode's
+own width distribution.
+
+**pycolmap mixes properties and methods.** On `Image`, `has_pose`, `name`, and
+`points2D` are properties while `cam_from_world` and `num_points2D` are
+methods. Reading `cam_from_world` as a property yields the bound method and
+fails on `.matrix()`, after twenty-six minutes of matching. Every pycolmap
+accessor in the codebase was audited; that was the only one misused. Note that
+`if not image.has_pose` would have failed silently in the other direction, so
+this is worth checking rather than assuming.
 
 **Ingest discarded 41 percent of a fully-registrable scan.** Blur rejection used
 an absolute variance-of-Laplacian threshold, which tracks scene texture as much
@@ -147,6 +187,61 @@ release reported the gripper still closed. First and last runs are now left
 alone.
 
 ---
+
+## Results on the real footage
+
+`runs/real01`, from `wristview-videos/`.
+
+### Stage 0 · Ingest
+
+| Clip | Kept | Rate |
+|---|---|---|
+| scan, overview.mov | 172 / 182 | 6 fps |
+| demo_0, C005 | 471 / 471 | 60 fps, later 20 fps by config |
+| demo_1, C006 | 574 / 574 | " |
+| demo_2, C007 | 405 / 405 | " |
+
+### Stage 1 · Reconstruction
+
+Against a standalone COLMAP run on the same clip, which registered 182 of 182
+at 0.909 px with 20,635 points and a mean track length of 9.3:
+
+| Metric | Baseline | This run | |
+|---|---|---|---|
+| Registered | 182 / 182 | 172 / 172, 100 percent | matches |
+| Models | 1 | 1 | matches |
+| Mean reprojection error | 0.909 px | 1.517 px | worse |
+| 3D points | 20,635 | 13,066 | fewer |
+| Mean track length | 9.3 | 11.4 | better |
+
+Every frame ingest kept was registered, into one connected model, so the ten
+dropped frames cost nothing.
+
+The two worse numbers come from the feature front-end, not from ingest. The
+baseline used COLMAP SIFT with subpixel refinement; this uses SuperPoint at
+1024 keypoints, which localizes to roughly a pixel. The higher track length
+says LightGlue matches each point across more views: fewer points, better
+observed. `scene.max_keypoints: 2048` recovers most of the precision at about
+four times the matching cost.
+
+**The self-calibration moved the focal length by 55 percent.**
+
+```
+prior, a guess at 0.85 x image width   f = 1836 px    60.9 deg horizontal
+refined by bundle adjustment           f = 2860 px    41.5 deg horizontal, k = +0.120
+```
+
+41.5 degrees is not a phone main-wide lens. Freezing the guess, which is what
+the code did before this was changed, would have carried that error silently
+into every camera pose and every downstream distance. Worth confirming against
+whatever actually shot the clips.
+
+**The demo clips are a top-down desk view**, not head-mounted egocentric.
+Confirmed by overlaying WiLoR landmarks on a frame: keyboard, glass and coaster
+seen from above. The pipeline handles it, but it matters for Stage 5, because
+the splat only contains viewpoints the scan actually visited and a wrist camera
+near the table looks from angles an overhead scan may never have covered.
+Stage 5 reports splat coverage per episode, which is the measure of that risk.
 
 ## Known gaps
 
@@ -189,7 +284,7 @@ runs/<run_id>/
 
 ## Tests
 
-128 tests, `ruff` clean.
+176 tests, `ruff` clean.
 
 ```bash
 uv run --python 3.11 python -m pytest tests/ -q
