@@ -73,6 +73,17 @@ scene:
     source: auto
     aruco_dict: DICT_4X4_50
     aruco_marker_length_m: 0.15
+    # Metric scale from something already in the shot, when there is no ARKit
+    # trajectory and no printed marker. Name it and give one real dimension.
+    #
+    # Diameter is the measurement to trust for anything roughly cylindrical
+    # and upright: its silhouette width is the diameter from every viewpoint,
+    # while silhouette height foreshortens with viewing angle. Height is used
+    # only as a cross-check.
+    known_object:
+      prompt: "a drinking glass"
+      diameter_m: 0.07
+      height_m: 0.15
     # Manual scale, for footage with no ARKit trajectory and no marker.
     # Measure one real distance in the scene, read the same distance off the
     # unscaled reconstruction, and put both here. Stage 1 divides.

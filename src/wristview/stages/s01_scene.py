@@ -5,12 +5,19 @@ Out: camera poses, sparse cloud, Gaussian splat, metric scale factor.
 
 The metric scale problem is the part not to skip. A COLMAP reconstruction is
 scale-ambiguous, and every downstream number, gripper width, approach
-distance, trajectory speed, is meaningless without real units. Two sources,
+distance, trajectory speed, is meaningless without real units. Four sources,
 tried in order:
 
-  ARKit   fit a Sim(3) between the ARKit trajectory, which is already in
-          metres, and the COLMAP trajectory. The scale falls out of the fit.
-  ArUco   triangulate a printed marker of known size and measure its side.
+  ARKit         fit a Sim(3) between the ARKit trajectory, which is already
+                in metres, and the COLMAP trajectory. Scale falls out of it.
+  ArUco         triangulate a printed marker of known size, measure its side.
+  known object  name something already in the shot and give one real
+                dimension. Detect it, triangulate it, measure it.
+  manual        state the factor, or a real distance and its reconstructed
+                counterpart.
+
+Prefer ARKit or ArUco when the capture allows: both are decided before the
+shutter closes. The other two recover a shoot that did not plan for scale.
 
 The whole reconstruction is then transformed into metric world coordinates,
 so no later stage has to remember which frame it is in.
@@ -161,6 +168,134 @@ def _fit_aruco_scale(
     }
     log.info("ArUco scale: %.5f from %d markers", scale, len(lengths))
     return scale, transform, diagnostics
+
+
+def _fit_known_object_scale(
+    frames_dir: Path,
+    frame_names: list[str],
+    colmap_poses: dict[str, np.ndarray],
+    intrinsics: Intrinsics,
+    config: dict,
+    device: str,
+    max_views: int = 24,
+) -> tuple[float, np.ndarray, dict] | None:
+    """Metric scale from an object of known size already in the scene.
+
+    The practical alternative to a printed marker: name something in the shot
+    and give one real dimension. A drinking glass is ideal because it is a
+    vertical cylinder, so its silhouette width is its diameter from every
+    viewpoint, while its silhouette height foreshortens with viewing angle.
+
+    Method: detect the object in registered scan frames, triangulate the mask
+    centroid to get its position, then for each view convert the mask's pixel
+    width into scene units using that view's distance. Width does not need
+    features on the object itself, which matters for glass.
+    """
+    from ..backends import objects as object_backend
+
+    prompt = str(config.get("prompt") or "").strip()
+    diameter_m = config.get("diameter_m")
+    height_m = config.get("height_m")
+    if not prompt or not diameter_m:
+        return None
+
+    dino_ok, dino_reason = object_backend.grounding_dino_available()
+    sam_ok, sam_reason = object_backend.sam2_available()
+    if not (dino_ok and sam_ok):
+        log.warning("known-object scale needs Grounding DINO and SAM 2: %s %s",
+                    dino_reason, sam_reason)
+        return None
+
+    try:
+        detector = object_backend.GroundingDinoDetector(device)
+        segmenter = object_backend.Sam2Segmenter(device)
+    except Exception as exc:  # noqa: BLE001 - fall through to the next source
+        log.warning("known-object scale could not load its models: %s", exc)
+        return None
+
+    registered = [n for n in frame_names if n in colmap_poses]
+    if len(registered) < 3:
+        return None
+    step = max(1, len(registered) // max_views)
+    sampled = registered[::step][:max_views]
+
+    observations: list[tuple[np.ndarray, np.ndarray]] = []
+    for name in sampled:
+        image = cv2.imread(str(frames_dir / name))
+        if image is None:
+            continue
+        box = detector.detect(image, prompt, 0.35, 0.25)
+        if box is None:
+            continue
+        mask = segmenter.segment(image, box=box)
+        mask = object_backend.clean_mask(mask, 200, 0.25)
+        if mask is None:
+            continue
+        observations.append((mask, colmap_poses[name]))
+
+    if len(observations) < 3:
+        log.warning(
+            "known-object scale: found '%s' in only %d of %d sampled scan frames",
+            prompt, len(observations), len(sampled),
+        )
+        return None
+
+    matrix = intrinsics.matrix
+    projections, pixels = [], []
+    for mask, pose in observations:
+        ys, xs = np.nonzero(mask)
+        projections.append(matrix @ invert_pose(pose)[:3, :4])
+        pixels.append(np.array([xs.mean(), ys.mean()]))
+
+    centre = _triangulate(projections, pixels)
+    if centre is None:
+        log.warning("known-object scale: could not triangulate the object centre")
+        return None
+
+    widths, heights = [], []
+    for mask, pose in observations:
+        distance = float(np.linalg.norm(pose[:3, 3] - centre))
+        ys, xs = np.nonzero(mask)
+        widths.append(float(xs.max() - xs.min()) * distance / intrinsics.fx)
+        heights.append(float(ys.max() - ys.min()) * distance / intrinsics.fy)
+
+    measured_width = float(np.median(widths))
+    if measured_width < 1e-9:
+        return None
+    scale = float(diameter_m) / measured_width
+
+    diagnostics = {
+        "method": "known_object",
+        "prompt": prompt,
+        "views_used": len(observations),
+        "views_sampled": len(sampled),
+        "known_diameter_m": float(diameter_m),
+        "measured_diameter_units": round(measured_width, 6),
+        "width_spread_units": round(float(np.percentile(widths, 84) - np.percentile(widths, 16)), 6),
+    }
+
+    if height_m:
+        # Height foreshortens with viewing angle, so the largest observation is
+        # the least foreshortened. A cross-check, never the primary measure.
+        measured_height = float(np.percentile(heights, 90))
+        diagnostics["known_height_m"] = float(height_m)
+        diagnostics["measured_height_units"] = round(measured_height, 6)
+        diagnostics["height_implied_scale"] = round(float(height_m) / max(measured_height, 1e-9), 6)
+        diagnostics["height_agreement"] = round(
+            diagnostics["height_implied_scale"] / scale, 4
+        )
+        log.info(
+            "known-object cross-check: height implies scale %.5f against %.5f from "
+            "diameter, agreement %.2f",
+            diagnostics["height_implied_scale"], scale, diagnostics["height_agreement"],
+        )
+
+    log.info(
+        "known-object scale: '%s' measured %.5f units across in %d views, "
+        "known %.3f m, scale %.5f",
+        prompt, measured_width, len(observations), diameter_m, scale,
+    )
+    return scale, sim3_matrix(scale, np.eye(3), np.zeros(3)), diagnostics
 
 
 def _manual_scale(config: dict) -> tuple[float, np.ndarray, dict] | None:
@@ -390,6 +525,13 @@ def run(ctx: RunContext) -> dict:
                     frames_dir, frame_names, poses, intrinsics,
                     scale_cfg.get("aruco_dict", "DICT_4X4_50"),
                     float(scale_cfg.get("aruco_marker_length_m", 0.15)),
+                )
+
+        if scale_result is None and source in ("auto", "known_object"):
+            with rec.timed("scale.known_object"):
+                scale_result = _fit_known_object_scale(
+                    frames_dir, frame_names, poses, intrinsics,
+                    scale_cfg.get("known_object", {}), device,
                 )
 
         if scale_result is None and source in ("auto", "manual"):
