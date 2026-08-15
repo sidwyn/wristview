@@ -11,8 +11,18 @@ ingest:
   # The scan clip is short, so 4 fps gives too few frames to reconstruct.
   # A 30 second scan at 6 fps gives about 180, which is the working range.
   scan_fps: 6.0
-  # 0 means keep the demo's native frame rate.
-  demo_fps: 0
+  # Demo frame rate. 0 keeps the clip's native rate.
+  #
+  # The build plan says demos at full rate. On 60 fps source that costs more
+  # than it returns: Stage 2 localizes every demo frame against the scan
+  # independently, which is 1450 frames times 10 retrieved scan frames of
+  # LightGlue, about four hours. Stage 3 then spends another hour on the same
+  # frames.
+  #
+  # 20 fps still sits above the 15 Hz control rate that Stage 4 resamples to,
+  # so nothing Stage 4 needs is lost, and it brings Stages 2 and 3 to about an
+  # hour together. Raise it when the trajectory itself is the subject.
+  demo_fps: 20
   max_scan_frames: 400
   max_demo_frames: 600
   jpeg_quality: 2
@@ -103,8 +113,9 @@ localize:
   ransac_max_error_px: 12.0
   ransac_min_inliers: 12
   smoothing_window: 5
-  # Cap on retrieved scan images to match each demo frame against.
-  retrieval_top_k: 20
+  # Scan frames to match each demo frame against. This multiplies the whole
+  # stage: every extra one is another LightGlue pair per demo frame.
+  retrieval_top_k: 10
 
 estimate:
   # Long side, in pixels, for the object and depth path. Rendering splat depth
