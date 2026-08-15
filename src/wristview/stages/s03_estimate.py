@@ -235,8 +235,17 @@ def _estimate_episode(
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
             # --- mask ---
+            # Grounding DINO re-detects only every `detect_interval` frames,
+            # or whenever the track has been lost. Running a text-conditioned
+            # detector on every frame is both the slowest part of the stage
+            # and the least stable: the box jitters between frames and drags
+            # the mask with it. Between detections SAM 2 is prompted with the
+            # previous mask's centroid, which tracks smoothly.
             mask = None
-            if detector is not None and segmenter is not None:
+            interval = max(1, int(object_cfg.get("detect_interval", 15)))
+            redetect = (index % interval == 0) or previous_mask is None
+
+            if detector is not None and segmenter is not None and redetect:
                 box = detector.detect(
                     image, instruction,
                     float(object_cfg.get("box_threshold", 0.3)),
@@ -244,10 +253,18 @@ def _estimate_episode(
                 )
                 if box is not None:
                     mask = segmenter.segment(image, box=box)
-            elif segmenter is not None and hand_valid[index]:
-                point = hand_backend.grasp_center(hand_px[index])
-                mask = segmenter.segment(image, point=point)
-            elif hand_valid[index]:
+
+            if mask is None and segmenter is not None:
+                point = None
+                if previous_mask is not None and previous_mask.any():
+                    ys, xs = np.nonzero(previous_mask)
+                    point = np.array([xs.mean(), ys.mean()], dtype=np.float64)
+                elif hand_valid[index]:
+                    point = hand_backend.grasp_center(hand_px[index])
+                if point is not None:
+                    mask = segmenter.segment(image, point=point)
+
+            if mask is None and segmenter is None and hand_valid[index]:
                 point = hand_backend.grasp_center(hand_px[index])
                 mask = object_backend.seed_mask_from_point(image, point)
 

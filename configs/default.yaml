@@ -125,6 +125,10 @@ estimate:
     prompt: ""
     box_threshold: 0.3
     text_threshold: 0.25
+    # Frames between Grounding DINO re-detections. In between, SAM 2 tracks
+    # from the previous mask's centroid, which is faster and steadier than
+    # re-detecting every frame.
+    detect_interval: 15
     # Fraction of the frame the object mask may occupy before it is rejected.
     max_mask_fraction: 0.4
     min_mask_pixels: 400
