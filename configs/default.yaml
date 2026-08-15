@@ -88,7 +88,10 @@ scene:
     enabled: true
     backend: mps
     iterations: 3000
-    resolution: 720
+    # Training resolution, long side. 540 rather than 720: it is 2.4x faster
+    # per iteration and holds peak memory near 1.4 GB at 60k Gaussians, on a
+    # 24 GB machine that has to share with everything else.
+    resolution: 540
     sh_degree: 2
     init_points: 60000
     position_lr: 0.00016

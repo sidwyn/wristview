@@ -391,3 +391,44 @@ class TestDensityScaling:
         centre = result.rgb[64, 64]
         assert float(centre[0]) > 0.5
         assert float(centre[2]) < 0.1
+
+
+def test_memory_does_not_scale_with_gaussian_count():
+    """Peak memory must stay bounded as the splat densifies.
+
+    Training died with MPS out of memory at 59k Gaussians on a 24 GB machine.
+    The chunk was 1024 tiles, so one unsaturated pixel anywhere forced every
+    tile in it to walk all max_per_tile slots, and each block was retained for
+    the backward pass. Small chunks let saturated regions stop early.
+    """
+    if DEVICE != "mps":
+        pytest.skip("memory accounting is MPS specific")
+
+    width, height = 540, 304
+    rng = np.random.default_rng(0)
+
+    def peak_for(count: int) -> float:
+        points = rng.normal(0, 0.6, (count, 3)).astype(np.float32)
+        points[:, 2] += 3.0
+        colors = rng.uniform(0, 1, (count, 3)).astype(np.float32)
+        model = GaussianModel(
+            torch.from_numpy(points), torch.from_numpy(colors), sh_degree=2, device=DEVICE
+        )
+        model.train()
+        torch.mps.empty_cache()
+        result = render(
+            model, identity_view(), 700.0, 700.0, width / 2, height / 2, width, height,
+            tile_size=16, max_per_tile=128,
+        )
+        result.rgb.mean().backward()
+        torch.mps.synchronize()
+        used = torch.mps.driver_allocated_memory() / 2**30
+        del model, result
+        torch.mps.empty_cache()
+        return used
+
+    small = peak_for(30_000)
+    large = peak_for(120_000)
+    # Four times the Gaussians must not cost four times the memory.
+    assert large < small * 2.0, f"{small:.2f} GB at 30k grew to {large:.2f} GB at 120k"
+    assert large < 6.0, f"peak {large:.2f} GB is too high for a 24 GB machine"

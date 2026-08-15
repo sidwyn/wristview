@@ -353,7 +353,7 @@ def render(
     max_per_tile: int = 128,
     near: float = 0.01,
     far: float = 100.0,
-    max_pixels_per_chunk: int = 262144,
+    max_pixels_per_chunk: int = 16384,
     max_tiles_per_gaussian: int | None = None,
     depth_block: int = 32,
 ) -> RenderResult:
@@ -483,6 +483,12 @@ def render(
 
     # Chunk over tiles so peak memory stays bounded regardless of resolution.
     pixels_per_tile = tile_size * tile_size
+    # Deliberately small. The early exit below can only fire when every pixel
+    # in the chunk is saturated, so a large chunk almost never triggers it:
+    # one unsaturated pixel anywhere forces the whole chunk to walk all
+    # max_per_tile slots, and every one of those blocks is retained for the
+    # backward pass. Small chunks let saturated regions stop early, which is
+    # where the memory saving actually comes from.
     tiles_per_chunk = max(1, max_pixels_per_chunk // pixels_per_tile)
 
     # Composite each tile's list in blocks along the depth axis, carrying
