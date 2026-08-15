@@ -258,20 +258,36 @@ def run(ctx: RunContext) -> dict:
 
         if cfg.get("matcher", "hloc") == "hloc":
             rec.backend("matcher", "superpoint+lightglue_mps")
+            force = bool(cfg.get("force_rematch", False))
+
             with rec.timed("features"):
-                sfm.extract_features(frames_dir, frame_names, features_path, device)
+                if not force and sfm.features_cover(features_path, frame_names):
+                    log.info("reusing existing features for %d frames", len(frame_names))
+                    rec.note("features reused from a previous run")
+                else:
+                    sfm.extract_features(
+                        frames_dir, frame_names, features_path, device,
+                        max_keypoints=int(cfg.get("max_keypoints", 1024)),
+                    )
+
             with rec.timed("pairs"):
                 descriptors = sfm.global_descriptors(frames_dir, frame_names)
                 pairs = sfm.build_pairs(
                     frame_names,
                     descriptors,
                     mode=cfg.get("pair_mode", "exhaustive"),
+                    seq_window=int(cfg.get("sequential_window", 10)),
                     retrieval_k=int(cfg.get("retrieval_num_matched", 15)),
                 )
                 pairs_path = sfm.write_pairs_file(pairs, out_dir / "pairs.txt")
-            log.info("matching %d image pairs", len(pairs))
+
             with rec.timed("matching"):
-                sfm.match_pairs(pairs, features_path, matches_path, device)
+                if not force and sfm.matches_cover(matches_path, pairs):
+                    log.info("reusing existing matches for %d pairs", len(pairs))
+                    rec.note("matches reused from a previous run")
+                else:
+                    log.info("matching %d image pairs", len(pairs))
+                    sfm.match_pairs(pairs, features_path, matches_path, device)
         else:
             raise NotImplementedError(
                 "Only the hloc matcher path is implemented. Set scene.matcher to hloc."

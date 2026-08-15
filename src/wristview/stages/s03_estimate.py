@@ -158,9 +158,7 @@ def _estimate_episode(
     frame_names = clip["frame_names"]
     count = len(frame_names)
 
-    hand_cfg = cfg.get("hand", {})
     object_cfg = cfg.get("object", {})
-    depth_cfg = cfg.get("depth", {})
     pose_cfg = cfg.get("pose", {})
 
     # ---- hand ------------------------------------------------------------

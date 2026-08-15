@@ -49,7 +49,13 @@ scene:
   matcher_conf: superpoint+lightglue
   # Exhaustive pairing is correct below roughly 400 frames.
   pair_mode: exhaustive
+  # Pairs to match per frame beyond the temporal window. Loop closures.
   retrieval_num_matched: 12
+  sequential_window: 10
+  # SuperPoint keypoints per image. Matching cost scales with the square.
+  max_keypoints: 1024
+  # Ignore cached features and matches and recompute them.
+  force_rematch: false
   min_registration_rate: 0.8
   max_reproj_error_px: 1.5
   scale:

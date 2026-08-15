@@ -351,6 +351,7 @@ def render(
     near: float = 0.01,
     far: float = 100.0,
     max_pixels_per_chunk: int = 262144,
+    max_tiles_per_gaussian: int | None = None,
 ) -> RenderResult:
     """Rasterize the Gaussians into one image.
 
@@ -412,21 +413,28 @@ def render(
         ty0 = ((uv_s[:, 1] - radius_s) / tile_size).floor().clamp(0, tiles_y - 1).to(torch.int64)
         ty1 = ((uv_s[:, 1] + radius_s) / tile_size).floor().clamp(0, tiles_y - 1).to(torch.int64)
 
-        span_x = (tx1 - tx0 + 1)
-        span_y = (ty1 - ty0 + 1)
-        span = span_x * span_y
+        # Bound how many tiles one Gaussian may touch, so a runaway blob
+        # mid-optimization cannot make the pair list cost a gigabyte.
+        #
+        # The clamp is centred on the Gaussian, not anchored to its top-left
+        # corner. Anchoring collapsed every wide Gaussian onto a single tile
+        # and made it disappear from the rest of its own footprint. That is
+        # not a rare degenerate case: the Stage 5 wrist camera sits
+        # centimetres from surfaces, where a Gaussian filling the frame is
+        # ordinary, and the symptom was near geometry vanishing behind far
+        # geometry.
+        if max_tiles_per_gaussian is not None and max_tiles_per_gaussian < num_tiles:
+            half = max(0, int(math.isqrt(max_tiles_per_gaussian)) // 2)
+            centre_x = (uv_s[:, 0] / tile_size).floor().clamp(0, tiles_x - 1).to(torch.int64)
+            centre_y = (uv_s[:, 1] / tile_size).floor().clamp(0, tiles_y - 1).to(torch.int64)
+            tx0 = torch.maximum(tx0, centre_x - half)
+            tx1 = torch.minimum(tx1, centre_x + half)
+            ty0 = torch.maximum(ty0, centre_y - half)
+            ty1 = torch.minimum(ty1, centre_y + half)
 
-        # A Gaussian that covers most of the frame is nearly always a
-        # degenerate one mid-optimization. Clamping its span keeps the pair
-        # list bounded instead of letting one blob cost a gigabyte.
-        max_span = max(4, num_tiles // 4)
-        too_wide = span > max_span
-        if bool(too_wide.any()):
-            tx1 = torch.where(too_wide, tx0, tx1)
-            ty1 = torch.where(too_wide, ty0, ty1)
-            span_x = (tx1 - tx0 + 1)
-            span_y = (ty1 - ty0 + 1)
-            span = span_x * span_y
+        span_x = (tx1 - tx0 + 1).clamp_min(1)
+        span_y = (ty1 - ty0 + 1).clamp_min(1)
+        span = span_x * span_y
 
         gauss_of_pair = torch.repeat_interleave(
             torch.arange(num_visible, device=device), span

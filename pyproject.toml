@@ -55,6 +55,7 @@ packages = ["src/wristview"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = ["ignore::DeprecationWarning"]
+markers = ["slow: exercises a renderer or a model, seconds not milliseconds"]
 
 [tool.ruff]
 line-length = 100

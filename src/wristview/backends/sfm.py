@@ -502,3 +502,36 @@ def localize_frame(
 def load_keypoints(features_path: Path, name: str) -> np.ndarray:
     with h5py.File(str(features_path), "r", libver="latest") as handle:
         return handle[name]["keypoints"][()]
+
+
+def features_cover(path: Path, names: list[str]) -> bool:
+    """True when an existing feature file already holds every image.
+
+    Matching a 172-frame scan costs about twenty minutes, so re-running a
+    later part of Stage 1, retraining the splat for instance, must not throw
+    that away.
+    """
+    if not path.exists():
+        return False
+    try:
+        with h5py.File(str(path), "r", libver="latest") as handle:
+            return all(name in handle for name in names)
+    except OSError:
+        return False
+
+
+def matches_cover(path: Path, pairs: list[tuple[str, str]]) -> bool:
+    """True when an existing match file already holds every pair."""
+    if not path.exists():
+        return False
+    try:
+        with h5py.File(str(path), "r", libver="latest") as handle:
+            for name0, name1 in pairs:
+                if names_to_pair(name0, name1) in handle:
+                    continue
+                if names_to_pair(name1, name0) in handle:
+                    continue
+                return False
+        return True
+    except OSError:
+        return False

@@ -23,7 +23,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import numpy as np
-import torch
 
 # MediaPipe hand landmark order. Fixed by that model, reused here so the
 # ground truth and the estimator speak the same language.
