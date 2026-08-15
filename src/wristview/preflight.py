@@ -30,6 +30,7 @@ import numpy as np
 
 from .backends import sfm
 from .logging_setup import get
+
 # Thresholds come from qc.py so there is exactly one definition. Two copies
 # drift, and a preflight that disagrees with the gate it predicts is worse
 # than no preflight: an inflated ceiling in the Stage 2 copy failed a clip the
