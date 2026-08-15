@@ -121,12 +121,19 @@ scene:
     # Set to null to use densify_grad_threshold instead.
     densify_grad_percentile: 98.0
     densify_grad_threshold: 0.0004
-    # Upstream 3DGS resets opacity every 3000 steps of a 30000 step run, to
-    # clear floaters. This schedule is 3000 steps in total, so a reset at 1500
-    # knocks every Gaussian to 0.01 opacity with too little left to recover:
-    # PSNR fell 19.9 to 16.4 dB across the reset and never came back. 0
-    # disables it. Raise the iteration count first if floaters are a problem.
-    opacity_reset_interval: 0
+    # Opacity reset is what clears floaters, the Gaussians that park a few
+    # centimetres in front of a training camera and blanket any later view
+    # from nearby. Disabling it has a cost that is invisible in PSNR: a
+    # 3000 step run with it off left a shell of floaters within 30 cm of the
+    # demo cameras, so splat-rendered depth came back pinned at the near
+    # plane and Stage 3 placed the object at the camera.
+    #
+    # It needs room to recover, though. At 3000 total steps a reset at 1500
+    # knocked every Gaussian to 0.01 opacity and PSNR fell 19.9 to 16.4 dB
+    # without coming back. Upstream resets every 3000 of 30000. So: keep this
+    # at 3000 and give the run enough iterations, or set 0 and accept
+    # floaters near the cameras.
+    opacity_reset_interval: 3000
     prune_opacity_threshold: 0.005
     max_gaussians: 400000
     tile_size: 16
@@ -162,6 +169,11 @@ estimate:
   # downstream needs it: accuracy there is set by the depth model, not by
   # pixel count. Hand estimation ignores this and runs at full resolution.
   work_resolution: 640
+  # Near plane for the splat depth render, in metres. A demo or wrist camera
+  # is never within this distance of real geometry, so anything nearer is a
+  # floater. Culling them matters: at 0.02 m the render came back fully
+  # saturated at the near plane and the object was placed at the camera.
+  depth_near_m: 0.3
   hand:
     # wilor, hamer, mediapipe, or auto.
     # auto order: WiLoR, then HaMeR, then MediaPipe. WiLoR is the one that

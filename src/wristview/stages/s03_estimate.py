@@ -83,15 +83,22 @@ def _groundtruth_path(ctx: RunContext) -> Path | None:
 
 
 def _render_splat_depth(
-    splat, camera_pose: np.ndarray, intrinsics: Intrinsics, device: str, far: float
+    splat, camera_pose: np.ndarray, intrinsics: Intrinsics, device: str, far: float,
+    near: float = 0.3,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Metric depth of the static scene, from the splat, at this camera pose."""
+    """Metric depth of the static scene, from the splat, at this camera pose.
+
+    `near` culls floaters rather than clipping real geometry. A camera is
+    never within 30 cm of the surface it is filming, so anything nearer is a
+    Gaussian that parked in front of a training camera. Left in, they blanket
+    the frame and the depth comes back pinned at the near plane.
+    """
     view = torch.tensor(invert_pose(camera_pose), device=device, dtype=torch.float32)
     with torch.no_grad():
         result = splat_render(
             splat, view, intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy,
             intrinsics.width, intrinsics.height,
-            tile_size=16, max_per_tile=192, near=0.02, far=far,
+            tile_size=16, max_per_tile=192, near=near, far=far,
         )
     depth = result.depth.cpu().numpy()
     valid = (result.alpha.cpu().numpy() > 0.5) & (depth < far * 0.99)
@@ -319,7 +326,8 @@ def _estimate_episode(
             metric = None
             if splat is not None:
                 reference, reference_valid = _render_splat_depth(
-                    splat, camera_poses[index], work_intrinsics, device, far
+                    splat, camera_poses[index], work_intrinsics, device, far,
+                    near=float(cfg.get("depth_near_m", 0.3)),
                 )
                 if depth_model is not None:
                     relative = depth_model.predict(image)
