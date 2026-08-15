@@ -37,7 +37,7 @@ from ..camera import Intrinsics
 from ..device import resolve as resolve_device
 from ..geometry import invert_pose, sim3_matrix, transform_points, umeyama_sim3
 from ..logging_setup import get
-from ..runctx import RunContext, StageRecorder, read_json, write_json
+from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
 
 log = get(__name__)
 
@@ -385,6 +385,7 @@ def run(ctx: RunContext) -> dict:
         )
         rec.backend("device", device)
 
+        verify_frames_present(frames_dir, frame_names, "scan")
         log.info("Stage 1: reconstructing from %d scan frames", len(frame_names))
 
         # ---- feature extraction and matching -----------------------------

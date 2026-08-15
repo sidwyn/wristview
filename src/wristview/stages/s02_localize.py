@@ -22,7 +22,7 @@ from ..camera import Intrinsics
 from ..device import resolve as resolve_device
 from ..geometry import slerp_fill, smooth_poses
 from ..logging_setup import get
-from ..runctx import RunContext, StageRecorder, read_json, write_json
+from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
 
 log = get(__name__)
 
@@ -73,6 +73,7 @@ def _localize_episode(
     features_path = out_dir / "features.h5"
     matches_path = out_dir / "matches.h5"
 
+    verify_frames_present(frames_dir, frame_names, clip_id)
     force = bool(cfg.get("force_rematch", False))
 
     with rec.timed(f"features.{clip_id}"):

@@ -194,6 +194,26 @@ class StageRecorder:
         return self.path
 
 
+def verify_frames_present(frames_dir: Path, names: list[str], clip_id: str) -> None:
+    """Fail now if the manifest and the frames on disk disagree.
+
+    Stages 1, 2 and 3 all read frames a previous stage recorded. When those
+    files are missing the failure surfaces late and unrecognisably: a missing
+    scan frame showed up as `KeyError: 'scan_00000.jpg'` from inside hloc's
+    match importer, sixteen minutes into matching, long after the cause.
+    """
+    missing = [name for name in names if not (frames_dir / name).exists()]
+    if not missing:
+        return
+
+    raise FileNotFoundError(
+        f"{clip_id}: {len(missing)} of {len(names)} frames named in the manifest "
+        f"are missing from {frames_dir}. First missing: {missing[:3]}. "
+        f"The frames directory has {len(list(frames_dir.glob('*.jpg')))} jpgs. "
+        f"Re-run stage 0 for this run."
+    )
+
+
 def write_json(path: str | Path, payload: Any) -> Path:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)

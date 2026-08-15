@@ -36,7 +36,7 @@ from ..camera import Intrinsics
 from ..device import resolve as resolve_device
 from ..geometry import invert_pose, make_pose, orthonormalize, smooth_poses, transform_points
 from ..logging_setup import get
-from ..runctx import RunContext, StageRecorder, read_json, write_json
+from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
 
 log = get(__name__)
 
@@ -158,6 +158,7 @@ def _estimate_episode(
     frame_names = clip["frame_names"]
     count = len(frame_names)
 
+    verify_frames_present(frames_dir, frame_names, clip_id)
     object_cfg = cfg.get("object", {})
     pose_cfg = cfg.get("pose", {})
 
