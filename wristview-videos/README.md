@@ -47,6 +47,18 @@ one.
 
 ## What to do differently next time
 
+**The scan must cover the demo's viewpoint.** This is what currently blocks the
+pipeline, and it blocks it completely. The demos are tight top-down close-ups
+covering about 30 cm of desk. The scan is a wide oblique orbit of the whole
+desk. They overlap so little that the best demo-to-scan feature match gives
+126 matches where scan-to-scan neighbours give over 700, and Stage 2 cannot
+recover a usable camera pose from that.
+
+So: after the wide orbit, **move in and scan the working area slowly from
+directly above**, at the same height and framing the demo camera uses, with
+the object in place. Twenty extra seconds. Without it nothing downstream of
+Stage 2 can run.
+
 Start with the object fully inside the frame and the hand out of frame, then
 reach in. Keep the object away from every edge for the whole clip.
 

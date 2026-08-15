@@ -250,9 +250,21 @@ def _localize_episode(
             f"overlap the scan well enough to trust the pose"
         )
 
-    if implausible and not rejected:
-        rejected = True
-        source = "implausible"
+    if implausible:
+        if bool(cfg.get("accept_implausible", False)):
+            # Escape hatch for exercising the downstream stages on real data
+            # when the capture cannot support localization. The geometry is
+            # wrong and every later artifact inherits that, so it is recorded
+            # on the episode rather than merely logged.
+            log.error(
+                "%s: trajectory is not physically possible, but accept_implausible "
+                "is set, so it will be passed downstream. EVERY LATER ARTIFACT FOR "
+                "THIS EPISODE IS GEOMETRICALLY INVALID.", clip_id,
+            )
+            source = "implausible_accepted"
+        elif not rejected:
+            rejected = True
+            source = "implausible"
 
     smoothed = poses
     if valid.any() and source != "failed":
@@ -276,6 +288,8 @@ def _localize_episode(
         "median_correspondences": int(np.median(correspondence_counts[valid])) if valid.any() else 0,
         "inlier_ratio": round(inlier_ratio, 4),
         "motion": motion,
+        "implausible": implausible,
+        "geometrically_valid": not implausible,
         "scene_span_m": scene_span_m,
         "poses": ctx.rel(poses_path),
     }

@@ -140,6 +140,10 @@ localize:
   # Median inliers over correspondences. Scan frames self-localize at 0.92;
   # demo frames that barely overlap the scan sat at 0.19.
   min_inlier_ratio: 0.35
+  # Pass an implausible trajectory downstream anyway. Only for exercising the
+  # later stages when the capture cannot support localization. Everything
+  # produced from such an episode is geometrically invalid and says so.
+  accept_implausible: false
   smoothing_window: 5
   # Scan frames to match each demo frame against. This multiplies the whole
   # stage: every extra one is another LightGlue pair per demo frame.

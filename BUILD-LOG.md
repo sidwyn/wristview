@@ -243,6 +243,67 @@ the splat only contains viewpoints the scan actually visited and a wrist camera
 near the table looks from angles an overhead scan may never have covered.
 Stage 5 reports splat coverage per episode, which is the measure of that risk.
 
+### Stage 2 · Localization — blocked by the capture
+
+**All three demo episodes are rejected.** This is a footage limitation, not a
+code fault, and it stops the pipeline before a wrist view.
+
+Stage 2 first reported 100 percent of frames registered on all three
+episodes, with trajectories like this:
+
+| Episode | Registered | Inlier ratio | Camera path | Median speed |
+|---|---|---|---|---|
+| demo_0 | 157 / 157 | 33 percent | 84.9 m | 9.7 m/s |
+| demo_1 | 191 / 191 | 39 percent | 82.6 m | 5.4 m/s |
+| demo_2 | 135 / 135 | 38 percent | 64.1 m | 4.8 m/s |
+
+The scene is 0.69 m across. Those paths are around a hundred times the scene
+size, in clips under ten seconds. Orientation was stable throughout, about
+six degrees end to end, so nothing upstream looked wrong.
+
+**A registration rate proves nothing on its own.** PnP returns a pose whenever
+it finds enough inliers, and with weak geometry those poses are individually
+valid and collectively nonsense.
+
+The cause was established by elimination, not by guessing:
+
+| Test | Result | Conclusion |
+|---|---|---|
+| Self-localize scan frames against their own model | 4.1 mm error, 92 percent inliers | the localization code is correct |
+| Sweep RANSAC threshold 12 to 2 px | path got worse | not a threshold problem |
+| Sweep assumed focal 1800 to 4500 px | inlier ratio flat near 19 percent | not a calibration problem |
+| Match one demo frame against **all 172** scan frames | best gives 126 matches, 24 percent inliers | the footage |
+
+Scan-to-scan neighbours give 700 or more matches. The best achievable
+demo-to-scan match gives 126.
+
+Looking at the frames explains it. The demos are tight top-down close-ups
+covering roughly 30 cm of desk, showing a hand, the glass and the coaster.
+The scan is a wide oblique orbit showing monitor, keyboard and speakers. They
+share only the coaster and some wood grain: about a sixfold scale difference
+plus a large viewpoint change, which SuperPoint and LightGlue cannot bridge.
+
+**The fix is in the capture.** The scan has to include close, top-down views
+at the demo's framing and working distance. After the wide orbit, move in and
+cover the working area slowly from directly above, at the height the demo
+camera sits, with the object in place. Twenty extra seconds of scanning.
+
+**Downstream behaviour was verified with `localize.accept_implausible`**, an
+explicit override that passes a bad trajectory on and marks every artifact
+from it as geometrically invalid. With it, Stages 3, 4 and 5 all execute on
+the real clips, and the failure propagates exactly as predicted:
+
+- Stage 3 hand estimation works: WiLoR detects on 74, 61 and 87 percent of
+  frames across the three episodes, and SAM 2 returns object masks
+- Stage 3 depth fitting fails with zero samples, because the splat renders
+  nothing from cameras the bad poses place tens of metres away
+- Stage 5 renders 118, 143 and 101 wrist frames at 640x480, all empty, and
+  reports splat coverage of 0.000
+
+Three independent checks caught the same problem: the Stage 2 plausibility
+test, the Stage 3 depth fit finding no valid reference pixels, and the Stage 5
+coverage warning. That redundancy is the point.
+
 ## Known gaps
 
 **No metric scale in the current footage.** There is no ARKit trajectory and no
@@ -284,7 +345,7 @@ runs/<run_id>/
 
 ## Tests
 
-176 tests, `ruff` clean.
+181 tests, `ruff` clean.
 
 ```bash
 uv run --python 3.11 python -m pytest tests/ -q
