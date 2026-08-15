@@ -71,13 +71,26 @@ def _localize_episode(
         )
 
     lookup = sfm.build_keypoint_to_point3d(reconstruction)
-    # The scan reconstruction's camera, reused because the demo clips come
-    # from the same lens in the same session.
-    camera = pycolmap.Camera.create(
-        camera_id=1, model="PINHOLE", focal_length=intrinsics.fx,
-        width=intrinsics.width, height=intrinsics.height,
-    )
-    camera.params = [intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy]
+
+    # Use the camera Stage 1 converged on, not the prior. The demo clips come
+    # from the same lens in the same session, and Stage 1 self-calibrates a
+    # SIMPLE_RADIAL model whose focal and distortion differ from the guess.
+    # Solving PnP against the guess would bake that error into every pose.
+    scan_cameras = list(reconstruction.cameras.values())
+    if scan_cameras:
+        camera = scan_cameras[0]
+        log.info(
+            "%s: PnP against the refined scan camera (%s, params %s)",
+            clip_id, camera.model.name if hasattr(camera.model, "name") else camera.model,
+            [round(float(p), 3) for p in camera.params],
+        )
+    else:
+        camera = pycolmap.Camera.create(
+            camera_id=1, model="PINHOLE", focal_length=intrinsics.fx,
+            width=intrinsics.width, height=intrinsics.height,
+        )
+        camera.params = [intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy]
+        log.warning("%s: scan reconstruction has no camera; using the Stage 0 prior", clip_id)
 
     pair_lookup: dict[str, list[str]] = {}
     for query, reference in pairs:
@@ -113,27 +126,37 @@ def _localize_episode(
     arkit_meta = clip.get("arkit")
 
     if register_rate < min_rate:
-        if arkit_meta:
+        scale_payload = read_json(ctx.stage_dir(1, create=False) / "scale.json")
+        scale_method = scale_payload.get("diagnostics", {}).get("method")
+
+        if arkit_meta and scale_method == "arkit_sim3":
             log.warning(
                 "%s: registration rate %.1f%% is below the %.0f%% threshold. "
-                "Falling back to the ARKit trajectory through the Stage 1 Sim(3).",
+                "Falling back to the ARKit trajectory.",
                 clip_id, register_rate * 100, min_rate * 100,
             )
-            scale_payload = read_json(ctx.stage_dir(1, create=False) / "scale.json")
-            transform = np.asarray(scale_payload["sim3_colmap_to_metric"])
-            scale = float(scale_payload["scale_factor"])
+            # Stage 1 transformed the whole reconstruction into the ARKit
+            # metric frame, so an ARKit trajectory is already in world
+            # coordinates and needs no further transform.
             arkit = np.load(ctx.root / arkit_meta["path"])["poses"]
             count = min(len(arkit), len(frame_names))
-
-            # ARKit is already metric, so only the rigid part of the Stage 1
-            # transform applies. The scale is divided back out.
-            rigid = transform.copy()
-            rigid[:3, :3] = rigid[:3, :3] / scale
             poses = np.repeat(np.eye(4)[None], len(frame_names), axis=0)
             poses[:count] = arkit[:count]
             valid = np.zeros(len(frame_names), dtype=bool)
             valid[:count] = True
             source = "arkit_fallback"
+        elif arkit_meta:
+            # Scale came from ArUco or a manual measurement, so the world is
+            # still in COLMAP's arbitrary frame. An ARKit trajectory lives in
+            # a different frame entirely and cannot be dropped in without an
+            # alignment nobody has computed.
+            log.error(
+                "%s: registration rate %.1f%% is below threshold. An ARKit "
+                "trajectory exists, but Stage 1 scaled the world with '%s', so "
+                "the two are in different frames and the fallback is unsafe.",
+                clip_id, register_rate * 100, scale_method,
+            )
+            source = "failed"
         else:
             log.error(
                 "%s: registration rate %.1f%% is below threshold and no ARKit "
