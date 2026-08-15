@@ -49,14 +49,33 @@ def _fit_arkit_scale(
     colmap_poses: dict[str, np.ndarray],
     frame_names: list[str],
     arkit_poses: np.ndarray,
+    frame_times: list[float] | None = None,
+    arkit_times: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray, dict] | None:
     """Fit a similarity transform from COLMAP to the ARKit metric frame.
 
-    Stage 0 keeps frames in order, and the ARKit trajectory is sampled at the
-    same rate, so index i of the kept frames corresponds to ARKit pose i.
+    Frames are matched to ARKit poses by timestamp, not by index. Stage 0
+    resamples the clip and then drops duplicates, so kept frame i is not
+    ARKit pose i: on the fixture, 260 ARKit poses against 390 extracted and
+    258 kept made the fit 0.12 m RMSE with a 1.9 m worst case, on a
+    trajectory that is exact by construction.
     """
-    registered = [(i, name) for i, name in enumerate(frame_names) if name in colmap_poses]
-    usable = [(i, name) for i, name in registered if i < len(arkit_poses)]
+    if frame_times is not None and arkit_times is not None and len(arkit_times):
+        pairs = []
+        for i, name in enumerate(frame_names):
+            if name not in colmap_poses or i >= len(frame_times):
+                continue
+            nearest = int(np.argmin(np.abs(arkit_times - frame_times[i])))
+            # Refuse a match that is more than half a frame away.
+            if abs(arkit_times[nearest] - frame_times[i]) <= 0.5 / max(
+                len(arkit_times) / max(arkit_times[-1] - arkit_times[0], 1e-6), 1e-6
+            ):
+                pairs.append((nearest, name))
+        usable = pairs
+    else:
+        registered = [(i, name) for i, name in enumerate(frame_names) if name in colmap_poses]
+        usable = [(i, name) for i, name in registered if i < len(arkit_poses)]
+
     if len(usable) < 8:
         log.warning(
             "only %d frames have both a COLMAP pose and an ARKit pose; "
@@ -518,7 +537,11 @@ def run(ctx: RunContext) -> dict:
         if source in ("auto", "arkit") and arkit_meta:
             with rec.timed("scale.arkit"):
                 arkit = np.load(ctx.root / arkit_meta["path"])
-                scale_result = _fit_arkit_scale(poses, frame_names, arkit["poses"])
+                scale_result = _fit_arkit_scale(
+                    poses, frame_names, arkit["poses"],
+                    frame_times=scan.get("frame_times_s"),
+                    arkit_times=arkit.get("timestamps"),
+                )
 
         if scale_result is None and source in ("auto", "aruco"):
             with rec.timed("scale.aruco"):

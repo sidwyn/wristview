@@ -244,6 +244,14 @@ def run(ctx: RunContext) -> dict:
             if not kept:
                 raise ValueError(f"{clip_id}: every frame was rejected as blurred or duplicate")
 
+            # Record when each kept frame happened, in source-video seconds.
+            # Frame index is not a usable clock: extraction resamples, and
+            # deduplication then removes an uneven subset. Anything matching
+            # frames against an external trajectory has to match on time.
+            extraction_fps = fps if fps > 0 else info.fps
+            position = {path: idx for idx, path in enumerate(extracted)}
+            frame_times = [position[path] / max(extraction_fps, 1e-9) for path in kept]
+
             names = _renumber(kept, frames_dir, clip_id)
 
             # The effective frame rate after filtering. Stage 4 needs it to
@@ -256,6 +264,7 @@ def run(ctx: RunContext) -> dict:
                 "video_info": info.to_dict(),
                 "frames_dir": ctx.rel(frames_dir),
                 "frame_names": names,
+                "frame_times_s": [round(t, 6) for t in frame_times],
                 "frame_count": len(names),
                 "extracted_count": len(extracted),
                 "requested_fps": fps if fps > 0 else info.fps,
