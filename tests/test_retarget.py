@@ -109,6 +109,55 @@ class TestDetectGrasp:
         )
         assert not closed.any(), "a pinch far from the object must not read as a grasp"
 
+    def test_detects_a_glass_sized_grasp(self):
+        """The widths measured by WiLoR on the real clips.
+
+        Open hand 12.2 cm, wrapped on the glass 5.8 cm. A fixed
+        close_distance of 4.5 cm sits below the wrapped width, so the trigger
+        would never latch and the episode would report no grasp at all.
+        """
+        count = 60
+        landmarks = np.zeros((count, 21, 3))
+        object_positions = np.zeros((count, 3))
+        for i in range(count):
+            carrying = i >= 20
+            gap = 0.058 if carrying else 0.122
+            travel = np.array([0.008 * (i - 20), 0.0, 0.0]) if carrying else np.zeros(3)
+            centre = np.array([0.0, 0.0, 0.80]) + travel
+            landmarks[i] = make_hand(
+                centre + np.array([gap / 2, 0.0, 0.0]),
+                centre - np.array([gap / 2, 0.0, 0.0]),
+            )
+            object_positions[i] = centre if carrying else np.array([0.0, 0.0, 0.80])
+
+        valid = np.ones(count, dtype=bool)
+        closed, diagnostics = detect_grasp(
+            landmarks, valid, object_positions, valid, fps=60.0,
+            cfg={"auto_threshold": True, "close_distance_m": 0.045,
+                 "open_distance_m": 0.065, "contact_distance_m": 0.05,
+                 "motion_coupling_threshold": 0.6, "min_object_speed_m_s": 0.02,
+                 "min_state_frames": 3},
+        )
+        assert diagnostics["threshold_source"] == "auto_percentile"
+        assert diagnostics["closed_frames"] > 0, "a 5.8 cm wrapped grasp was missed"
+        assert closed[30:].all()
+        assert not closed[:15].any()
+
+    def test_falls_back_to_config_when_the_hand_never_changes_shape(self):
+        count = 40
+        landmarks = np.stack(
+            [make_hand(np.array([0.05, 0, 0.8]), np.array([-0.05, 0, 0.8]))] * count
+        )
+        object_positions = np.tile(np.array([0.0, 0.0, 0.80]), (count, 1))
+        valid = np.ones(count, dtype=bool)
+        _, diagnostics = detect_grasp(
+            landmarks, valid, object_positions, valid, fps=60.0,
+            cfg={"auto_threshold": True, "close_distance_m": 0.070,
+                 "open_distance_m": 0.095},
+        )
+        assert diagnostics["threshold_source"] == "config"
+        assert diagnostics["close_distance_m"] == pytest.approx(0.070)
+
     def test_reports_no_transitions_when_the_hand_never_closes(self):
         count = 20
         landmarks = np.stack(

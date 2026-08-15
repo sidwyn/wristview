@@ -82,8 +82,8 @@ def detect_grasp(
     widths = np.full(count, np.nan)
     contact = np.zeros(count, dtype=bool)
 
-    close_distance = float(cfg.get("close_distance_m", 0.045))
-    open_distance = float(cfg.get("open_distance_m", 0.065))
+    close_distance = float(cfg.get("close_distance_m", 0.070))
+    open_distance = float(cfg.get("open_distance_m", 0.095))
     contact_distance = float(cfg.get("contact_distance_m", 0.05))
     coupling_threshold = float(cfg.get("motion_coupling_threshold", 0.6))
     min_speed = float(cfg.get("min_object_speed_m_s", 0.02))
@@ -92,6 +92,23 @@ def detect_grasp(
         if not valid[index]:
             continue
         widths[index] = hand_backend.grasp_width(landmarks[index])
+
+    # Fixed thresholds in metres only suit one object size. A wrapped grasp on
+    # a drinking glass holds the thumb and index about 5.8 cm apart, while a
+    # small block closes to under 4 cm, so a single pair of numbers cannot
+    # serve both and the failure is silent: the trigger simply never latches.
+    #
+    # So derive them from this episode's own width distribution, and fall back
+    # to the configured metres when the hand barely changes shape, which is
+    # what a clip with no grasp in it looks like.
+    finite = np.isfinite(widths)
+    threshold_source = "config"
+    if bool(cfg.get("auto_threshold", True)) and int(finite.sum()) >= 10:
+        low, high = np.percentile(widths[finite], [15, 85])
+        if high - low > 0.015:
+            close_distance = float(low + 0.35 * (high - low))
+            open_distance = float(low + 0.65 * (high - low))
+            threshold_source = "auto_percentile"
         if object_valid[index]:
             distance = np.linalg.norm(
                 hand_backend.grasp_center(landmarks[index]) - object_positions[index]
@@ -153,6 +170,15 @@ def detect_grasp(
         "coupled_frames": int(coupled.sum()),
         "median_width_m": (
             round(float(np.nanmedian(widths)), 4) if np.isfinite(widths).any() else None
+        ),
+        # Recorded so a wrong threshold is visible rather than silent.
+        "threshold_source": threshold_source,
+        "close_distance_m": round(close_distance, 4),
+        "open_distance_m": round(open_distance, 4),
+        "width_percentiles_m": (
+            [round(float(v), 4) for v in np.percentile(widths[finite], [5, 25, 50, 75, 95])]
+            if bool(finite.any())
+            else None
         ),
     }
     return holding, diagnostics

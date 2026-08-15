@@ -152,9 +152,16 @@ retarget:
     finger_length_m: 0.055
     palm_depth_m: 0.06
   grasp:
+    # Derive the open and closed thresholds from each episode's own width
+    # distribution. A wrapped grasp on a drinking glass holds the thumb and
+    # index about 5.8 cm apart while a small block closes under 4 cm, so one
+    # pair of fixed distances cannot serve both, and the failure is silent:
+    # the trigger never latches. The metres below are the fallback for a clip
+    # whose hand barely changes shape.
+    auto_threshold: true
     # Thumb tip to index tip distance below which the hand may be grasping.
-    close_distance_m: 0.045
-    open_distance_m: 0.065
+    close_distance_m: 0.070
+    open_distance_m: 0.095
     # Fingertip to object surface distance for a contact candidate.
     contact_distance_m: 0.05
     # Cosine similarity between hand and object velocity that confirms carrying.
