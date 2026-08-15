@@ -221,3 +221,100 @@ def test_overfits_a_single_view():
             first = float(loss)
 
     assert float(loss) < first * 0.85, f"loss did not fall: {first:.4f} to {float(loss):.4f}"
+
+
+class TestDensification:
+    """Adaptive density control has to actually fire.
+
+    It failed silently once: the screen-space gradient was accumulated in
+    pixels while `grad_threshold` follows the 3DGS convention and is
+    calibrated against normalized device coordinates. The two differ by about
+    300x at 720p, so nothing ever crossed the threshold. A room-scale splat
+    stayed at its 13k initial points and only shrank through pruning, and the
+    only symptom was a splat that looked thin.
+    """
+
+    def _underfit_scene(self, count: int = 400):
+        rng = np.random.default_rng(0)
+        points = rng.normal(0, 0.4, (count, 3)).astype(np.float32)
+        points[:, 2] += 3.0
+        colors = rng.uniform(0, 1, (count, 3)).astype(np.float32)
+        model = GaussianModel(
+            torch.from_numpy(points), torch.from_numpy(colors), sh_degree=0, device=DEVICE
+        )
+        model.train()
+        return model
+
+    def test_gradient_is_accumulated_in_ndc_units(self):
+        from wristview.backends.splat_mps import Densifier
+
+        model = self._underfit_scene()
+        width, height = 320, 240
+        target = torch.rand(height, width, 3, device=DEVICE)
+        result = render(model, identity_view(), 300.0, 300.0, width / 2, height / 2, width, height)
+        (result.rgb - target).abs().mean().backward()
+
+        densifier = Densifier(scene_extent=1.0)
+        densifier.accumulate(model, result)
+
+        pixel_grad = result.__dict__["_uv"].grad.norm(dim=-1).mean()
+        accumulated = (model.grad_accum.sum() / model.grad_count.clamp_min(1).sum())
+        # Roughly half the image diagonal larger than the pixel-space value.
+        assert float(accumulated) > float(pixel_grad) * 50
+
+    def test_densification_grows_an_underfit_splat(self):
+        from wristview.backends.splat_mps import Densifier
+
+        model = self._underfit_scene()
+        start = model.count
+        width, height = 320, 240
+        target = torch.rand(height, width, 3, device=DEVICE)
+
+        optimizer = torch.optim.Adam(
+            [
+                {"params": [model.means], "lr": 0.001},
+                {"params": [model.sh], "lr": 0.02},
+                {"params": [model.opacity_logit], "lr": 0.05},
+                {"params": [model.log_scales], "lr": 0.005},
+                {"params": [model.quats], "lr": 0.001},
+            ],
+            eps=1e-15,
+        )
+        densifier = Densifier(grad_threshold=0.0004, scene_extent=1.0, max_gaussians=100000)
+
+        for _ in range(30):
+            result = render(
+                model, identity_view(), 300.0, 300.0, width / 2, height / 2, width, height
+            )
+            (result.rgb - target).abs().mean().backward()
+            densifier.accumulate(model, result)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+        stats = densifier.step(model, optimizer)
+        assert stats["cloned"] + stats["split"] > 0, (
+            f"densification never fired: {stats}. The splat cannot grow to fit a scene."
+        )
+        assert model.count > start
+
+    def test_densification_respects_the_gaussian_cap(self):
+        from wristview.backends.splat_mps import Densifier
+
+        model = self._underfit_scene()
+        width, height = 320, 240
+        target = torch.rand(height, width, 3, device=DEVICE)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+        cap = model.count + 20
+        densifier = Densifier(grad_threshold=0.0, scene_extent=1.0, max_gaussians=cap)
+
+        for _ in range(5):
+            result = render(
+                model, identity_view(), 300.0, 300.0, width / 2, height / 2, width, height
+            )
+            (result.rgb - target).abs().mean().backward()
+            densifier.accumulate(model, result)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+
+        densifier.step(model, optimizer)
+        assert model.count <= cap + 1, f"cap {cap} exceeded: {model.count}"

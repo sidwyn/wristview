@@ -542,6 +542,9 @@ def render(
     result.__dict__["_keep_idx"] = keep_idx
     result.__dict__["_radius"] = radius_v
     result.__dict__["_overflow"] = overflow
+    # The densifier needs this to express the screen-space gradient in
+    # normalized device coordinates rather than pixels. See Densifier.accumulate.
+    result.__dict__["_render_size"] = (width, height)
     return result
 
 
@@ -578,14 +581,31 @@ class Densifier:
         self.scene_extent = scene_extent
 
     def accumulate(self, model: GaussianModel, result: RenderResult) -> None:
-        """Record screen-space gradient magnitude for the visible Gaussians."""
+        """Record screen-space gradient magnitude for the visible Gaussians.
+
+        The gradient is converted from pixels to normalized device
+        coordinates before it is accumulated. This rasterizer projects to
+        pixels, so `uv.grad` is per-pixel, while `grad_threshold` follows the
+        3DGS convention and is calibrated against NDC, where the image spans
+        [-1, 1]. The two differ by half the image size, about 300x at 720p.
+
+        Left in pixels, no Gaussian ever crosses the threshold and
+        densification silently never fires: on a room scan the splat stayed
+        at its 13k initial points and only shrank through pruning. Converting
+        here also makes the threshold independent of training resolution.
+        """
         uv = result.__dict__.get("_uv")
         keep_idx = result.__dict__.get("_keep_idx")
         radius = result.__dict__.get("_radius")
-        if uv is None or uv.grad is None:
+        size = result.__dict__.get("_render_size")
+        if uv is None or uv.grad is None or size is None:
             return
+        width, height = size
         with torch.no_grad():
-            grad_norm = uv.grad.norm(dim=-1)
+            to_ndc = torch.tensor(
+                [width / 2.0, height / 2.0], device=uv.grad.device, dtype=uv.grad.dtype
+            )
+            grad_norm = (uv.grad * to_ndc).norm(dim=-1)
             model.grad_accum.index_add_(0, keep_idx, grad_norm)
             model.grad_count.index_add_(0, keep_idx, torch.ones_like(grad_norm))
             model.max_radii[keep_idx] = torch.maximum(model.max_radii[keep_idx], radius)
