@@ -432,3 +432,61 @@ def test_memory_does_not_scale_with_gaussian_count():
     # Four times the Gaussians must not cost four times the memory.
     assert large < small * 2.0, f"{small:.2f} GB at 30k grew to {large:.2f} GB at 120k"
     assert large < 6.0, f"peak {large:.2f} GB is too high for a 24 GB machine"
+
+
+class TestDensificationTransfersBetweenScenes:
+    """A densification threshold has to work at any scene scale.
+
+    An absolute gradient threshold does not transfer. The same 4e-4 that grew
+    a 0.30 m desk reconstruction from 13k to 60k Gaussians selected nothing on
+    a 2.57 m room, and the splat shrank through pruning while reporting
+    `+0 cloned, +0 split`. The only visible symptom was a thin splat.
+    """
+
+    def _run(self, extent: float, **densifier_kwargs) -> dict:
+        rng = np.random.default_rng(0)
+        points = rng.normal(0, extent / 3, (4000, 3)).astype(np.float32)
+        points[:, 2] += extent * 3
+        colors = rng.uniform(0, 1, (4000, 3)).astype(np.float32)
+        model = GaussianModel(
+            torch.from_numpy(points), torch.from_numpy(colors), sh_degree=1, device=DEVICE
+        )
+        model.train()
+
+        from wristview.backends.splat_mps import Densifier
+
+        width, height = 320, 240
+        target = torch.rand(height, width, 3, device=DEVICE)
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        densifier = Densifier(scene_extent=extent, max_gaussians=200_000, **densifier_kwargs)
+
+        for _ in range(15):
+            result = render(
+                model, identity_view(), 300.0, 300.0, width / 2, height / 2, width, height
+            )
+            (result.rgb - target).abs().mean().backward()
+            densifier.accumulate(model, result)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        return densifier.step(model, optimizer)
+
+    def test_percentile_densifies_at_a_small_scene_scale(self):
+        stats = self._run(0.3, grad_percentile=98.0)
+        assert stats["cloned"] + stats["split"] > 0
+
+    def test_percentile_densifies_at_a_large_scene_scale(self):
+        stats = self._run(2.6, grad_percentile=98.0)
+        assert stats["cloned"] + stats["split"] > 0
+
+    def test_growth_rate_is_the_same_at_both_scales(self):
+        small = self._run(0.3, grad_percentile=98.0)
+        large = self._run(2.6, grad_percentile=98.0)
+        small_total = small["cloned"] + small["split"]
+        large_total = large["cloned"] + large["split"]
+        assert small_total == pytest.approx(large_total, rel=0.25), (
+            f"scene scale changed the growth rate: {small_total} against {large_total}"
+        )
+
+    def test_percentile_reports_the_threshold_it_chose(self):
+        stats = self._run(1.0, grad_percentile=98.0)
+        assert 0 < stats["threshold"] < 1.0

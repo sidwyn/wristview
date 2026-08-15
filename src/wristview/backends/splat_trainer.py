@@ -167,8 +167,10 @@ def train_splat(
         eps=1e-15,
     )
 
+    grad_percentile = config.get("densify_grad_percentile")
     densifier = Densifier(
         grad_threshold=float(config["densify_grad_threshold"]),
+        grad_percentile=float(grad_percentile) if grad_percentile is not None else None,
         prune_opacity=float(config["prune_opacity_threshold"]),
         max_gaussians=int(config["max_gaussians"]),
         scene_extent=scene_extent,
@@ -227,8 +229,10 @@ def train_splat(
         ):
             stats = densifier.step(model, optimizer)
             log.info(
-                "  step %5d densify: +%d cloned, +%d split, -%d pruned, now %d",
+                "  step %5d densify: +%d cloned, +%d split, -%d pruned, now %d "
+                "(grad threshold %.2e)",
                 step, stats["cloned"], stats["split"], stats["pruned"], stats["count"],
+                stats["threshold"],
             )
 
         reset_interval = int(config.get("opacity_reset_interval", 0))

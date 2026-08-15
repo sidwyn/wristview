@@ -613,7 +613,9 @@ class Densifier:
         max_gaussians: int = 400000,
         percent_dense: float = 0.01,
         scene_extent: float = 1.0,
+        grad_percentile: float | None = None,
     ):
+        self.grad_percentile = grad_percentile
         self.grad_threshold = grad_threshold
         self.prune_opacity = prune_opacity
         self.max_gaussians = max_gaussians
@@ -658,7 +660,34 @@ class Densifier:
             max_scale = scales.max(dim=1).values
 
             headroom = max(0, self.max_gaussians - model.count)
-            selected = (avg_grad >= self.grad_threshold) & (model.grad_count > 0)
+            seen = model.grad_count > 0
+
+            # An absolute gradient threshold does not transfer between scenes.
+            # The same 4e-4 that densified a 0.30 m desk reconstruction
+            # selected nothing at all on a 2.57 m room, and the failure is
+            # silent: the splat simply stops growing and looks thin.
+            #
+            # So the threshold can be a quantile of the observed distribution
+            # instead, which targets a growth rate rather than a magnitude and
+            # is the same in any scene.
+            threshold = self.grad_threshold
+            if self.grad_percentile is not None and bool(seen.any()):
+                observed = avg_grad[seen]
+                quantile = float(
+                    observed.quantile(min(max(self.grad_percentile / 100.0, 0.0), 1.0))
+                )
+                # Never densify on numerically dead gradients.
+                threshold = max(quantile, 1e-9)
+
+            selected = (avg_grad >= threshold) & seen
+
+            if not bool(selected.any()) and bool(seen.any()):
+                observed = avg_grad[seen]
+                log.warning(
+                    "densification selected nothing: %d gaussians seen, "
+                    "p99 gradient %.3e against threshold %.3e",
+                    int(seen.sum()), float(observed.quantile(0.99)), threshold,
+                )
 
             size_limit = self.percent_dense * self.scene_extent
             clone_mask = selected & (max_scale <= size_limit)
@@ -701,7 +730,10 @@ class Densifier:
             model.grad_count.zero_()
             model.max_radii.zero_()
 
-        return {"cloned": n_clone, "split": n_split, "pruned": n_prune, "count": model.count}
+        return {
+            "cloned": n_clone, "split": n_split, "pruned": n_prune,
+            "count": model.count, "threshold": float(threshold),
+        }
 
     def _clone(self, model: GaussianModel, mask: torch.Tensor) -> dict:
         """Copy small under-fitting Gaussians. The copy drifts under gradient."""

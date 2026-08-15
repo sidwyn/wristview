@@ -113,6 +113,13 @@ scene:
     densify_from_iter: 300
     densify_until_iter: 2000
     densify_interval: 100
+    # Densify the gaussians whose screen-space gradient is in the top slice
+    # of the observed distribution. A quantile rather than the absolute
+    # threshold below, because the absolute one does not transfer between
+    # scenes: 4e-4 densified a 0.30 m desk reconstruction and selected nothing
+    # at all on a 2.57 m room, leaving the splat to shrink silently.
+    # Set to null to use densify_grad_threshold instead.
+    densify_grad_percentile: 98.0
     densify_grad_threshold: 0.0004
     # Upstream 3DGS resets opacity every 3000 steps of a 30000 step run, to
     # clear floaters. This schedule is 3000 steps in total, so a reset at 1500
