@@ -72,13 +72,45 @@ def _render_episode(
     wrist_dir.mkdir(parents=True, exist_ok=True)
 
     trajectory = np.load(ctx.episode_dir(4, clip_id, create=False) / "ee_trajectory.npz")
-    ee_poses = trajectory["poses_video_rate"]
-    widths = trajectory["width_video_rate"]
-    closed = trajectory["closed_video_rate"]
+
+    # Render the control-rate trajectory, not the video-rate one. A wrist
+    # frame is only useful paired with the action taken at that instant, and
+    # the action stream is at the control rate. At 60 fps input and 15 Hz
+    # control that is a quarter of the frames for the same dataset.
+    rate = str(cfg.get("sample_rate", "control"))
+    if rate == "video":
+        ee_poses = trajectory["poses_video_rate"]
+        widths = trajectory["width_video_rate"]
+        closed = trajectory["closed_video_rate"]
+        timestamps = np.arange(len(ee_poses)) / float(trajectory["source_fps"])
+    else:
+        ee_poses = trajectory["poses"]
+        widths = trajectory["width_m"]
+        closed = trajectory["closed"]
+        timestamps = trajectory["timestamps_s"]
+
+    limit = int(cfg.get("max_frames", 0) or 0)
+    if limit and len(ee_poses) > limit:
+        log.warning(
+            "%s: capping the render at %d of %d frames (render.max_frames)",
+            clip_id, limit, len(ee_poses),
+        )
+        keep = np.linspace(0, len(ee_poses) - 1, limit).astype(int)
+        ee_poses, widths, closed = ee_poses[keep], widths[keep], closed[keep]
+        timestamps = timestamps[keep]
 
     estimate_dir = ctx.episode_dir(3, clip_id, create=False)
-    object_poses = np.load(estimate_dir / "object_pose.npy")
-    object_valid = np.load(estimate_dir / "object_valid.npy")
+    object_poses_video = np.load(estimate_dir / "object_pose.npy")
+    object_valid_video = np.load(estimate_dir / "object_valid.npy")
+
+    # Object poses are indexed by demo frame. Map each render sample onto the
+    # nearest one rather than assuming the two sequences line up.
+    source_fps = float(trajectory["source_fps"])
+    frame_index = np.clip(
+        np.round(timestamps * source_fps).astype(int), 0, len(object_poses_video) - 1
+    )
+    object_poses = object_poses_video[frame_index]
+    object_valid = object_valid_video[frame_index]
     model_path = estimate_dir / "object_model.npy"
     object_model = np.load(model_path) if model_path.exists() else None
 

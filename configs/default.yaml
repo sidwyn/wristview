@@ -168,6 +168,12 @@ retarget:
 render:
   width: 640
   height: 480
+  # `control` renders one frame per control sample, which is what pairs with
+  # an action. `video` renders every demo frame, which is four times the work
+  # at 60 fps input and 15 Hz control.
+  sample_rate: control
+  # 0 means no cap. Set a small number for a quick look.
+  max_frames: 0
   # Wrist camera pose relative to the end-effector frame.
   # Translation in metres, rotation as roll, pitch, yaw in degrees.
   wrist_camera:
