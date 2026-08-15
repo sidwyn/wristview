@@ -342,6 +342,26 @@ def command_marker(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_evaluate(args: argparse.Namespace) -> int:
+    """Score a run against synthetic ground truth."""
+    from .evaluate import evaluate_run, format_reports
+
+    setup(None, verbose=args.verbose)
+    run_root = Path(args.run).resolve()
+    truth = Path(args.groundtruth).resolve()
+    for path in (run_root, truth):
+        if not path.exists():
+            print(f"not found: {path}", file=sys.stderr)
+            return 2
+
+    reports = evaluate_run(run_root, truth)
+    if not reports:
+        print("no episodes to evaluate", file=sys.stderr)
+        return 1
+    print(format_reports(reports))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="wristview",
@@ -398,6 +418,14 @@ def build_parser() -> argparse.ArgumentParser:
     marker_parser.add_argument("--id", type=int, default=0)
     marker_parser.add_argument("--dictionary", default="DICT_4X4_50")
     marker_parser.set_defaults(func=command_marker)
+
+    eval_parser = subparsers.add_parser(
+        "evaluate", help="score a run against synthetic ground truth"
+    )
+    eval_parser.add_argument("--run", required=True)
+    eval_parser.add_argument("--groundtruth", required=True)
+    eval_parser.add_argument("-v", "--verbose", action="store_true")
+    eval_parser.set_defaults(func=command_evaluate)
 
     return parser
 
