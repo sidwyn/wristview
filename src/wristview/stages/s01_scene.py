@@ -35,7 +35,7 @@ from ..backends.splat_mps import GaussianModel
 from ..backends.splat_trainer import load_cameras, train_splat
 from ..camera import Intrinsics
 from ..device import resolve as resolve_device
-from ..geometry import invert_pose, sim3_matrix, transform_points, umeyama_sim3
+from ..geometry import invert_pose, orthonormalize, sim3_matrix, transform_points, umeyama_sim3
 from ..logging_setup import get
 from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
 
@@ -581,13 +581,29 @@ def run(ctx: RunContext) -> dict:
 
         # Move the whole reconstruction into metric world coordinates, so no
         # later stage has to track which frame it is looking at.
+        #
+        # The reconstruction itself is transformed, not just a copy of its
+        # poses. Stage 2 localizes demo frames against the model written to
+        # disk, so leaving that model in COLMAP's arbitrary frame puts every
+        # demo camera in a different space from the splat, while each stage
+        # still looks internally consistent. The fixture caught it: camera
+        # error came out at 2.5 m and 147 degrees against ground truth.
         with rec.timed("transform"):
-            metric_poses = {name: transform @ pose for name, pose in poses.items()}
-            for name, pose in metric_poses.items():
-                # The rotation block must stay orthonormal after the scaling.
-                metric_poses[name][:3, :3] = pose[:3, :3] / scale
+            if diagnostics["method"] != "none":
+                import pycolmap
+
+                rotation = transform[:3, :3] / scale
+                reconstruction.transform(
+                    pycolmap.Sim3d(
+                        scale,
+                        pycolmap.Rotation3d(orthonormalize(rotation)),
+                        transform[:3, 3],
+                    )
+                )
+
+            metric_poses = sfm.reconstruction_poses(reconstruction)
             points, colors = sfm.reconstruction_points(reconstruction)
-            metric_points = transform_points(transform, points) if len(points) else points
+            metric_points = points
 
         scale_payload = {
             "scale_factor": float(scale),

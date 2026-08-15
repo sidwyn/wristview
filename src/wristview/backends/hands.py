@@ -303,26 +303,34 @@ class GroundTruthHands:
     meta.json. It must never be mistaken for an estimate.
     """
 
-    def __init__(self, groundtruth_path: Path, clip_id: str):
+    def __init__(self, groundtruth_path: Path, clip_id: str, run_fps: float | None = None):
         import json
 
         payload = json.loads(Path(groundtruth_path).read_text())
         demo = payload["demos"][clip_id]
         self.landmarks_world = np.asarray(demo["hand_landmarks"])
         self.count = len(self.landmarks_world)
+        # Stage 0 resamples demos, so run frame i is not ground-truth frame i.
+        # Indexing straight into the fixture put the hand at the wrong instant
+        # and showed up as a 17 cm error on a supposedly exact input.
+        self.gt_fps = float(demo.get("fps") or 30.0)
+        self.run_fps = float(run_fps or self.gt_fps)
         log.warning(
-            "using SYNTHETIC GROUND TRUTH hand landmarks for %s (%d frames). "
-            "This is fixture data, not an estimate.",
-            clip_id, self.count,
+            "using SYNTHETIC GROUND TRUTH hand landmarks for %s (%d frames at "
+            "%.1f fps, run at %.1f fps). This is fixture data, not an estimate.",
+            clip_id, self.count, self.gt_fps, self.run_fps,
         )
+
+    def _source_index(self, index: int) -> int:
+        return int(min(np.floor(index / self.run_fps * self.gt_fps + 0.5), self.count - 1))
 
     def frame(self, index: int, camera_pose: np.ndarray, intrinsics: Intrinsics) -> HandFrame:
         """Return the true landmarks, expressed in the camera frame."""
         from ..geometry import invert_pose, transform_points
 
-        if index >= self.count:
+        if self.count == 0 or index / max(self.run_fps, 1e-9) * self.gt_fps > self.count:
             return HandFrame(False, np.zeros((21, 2)), np.zeros((21, 3)), 0.0, "")
-        world = self.landmarks_world[index]
+        world = self.landmarks_world[self._source_index(index)]
         cam = transform_points(invert_pose(camera_pose), world)
         pixels, _ = intrinsics.project(cam)
         return HandFrame(True, pixels, cam, 1.0, "Right")

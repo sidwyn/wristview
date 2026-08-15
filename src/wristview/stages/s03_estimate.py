@@ -172,7 +172,10 @@ def _estimate_episode(
     hand_kind = models["hand_kind"]
     groundtruth_hands = None
     if hand_kind == "synthetic_groundtruth":
-        groundtruth_hands = hand_backend.GroundTruthHands(models["groundtruth_path"], clip_id)
+        groundtruth_hands = hand_backend.GroundTruthHands(
+            models["groundtruth_path"], clip_id,
+            run_fps=float(clip.get("effective_fps") or clip["video_info"]["fps"]),
+        )
 
     # The object and depth path runs at a reduced resolution. Rendering splat
     # depth at the demo's native 2160x1214 is 2.6 million pixels a frame, and
