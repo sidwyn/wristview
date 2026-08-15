@@ -61,26 +61,53 @@ def look_at_pose(eye: np.ndarray, target: np.ndarray, up=(0.0, 0.0, 1.0)) -> np.
     return pose
 
 
-def scan_trajectory(count: int, rng: np.random.Generator) -> list[np.ndarray]:
-    """A slow orbit of the table, varying height, as the runbook describes.
+def scan_trajectory(
+    count: int, rng: np.random.Generator, close_fraction: float = 0.45
+) -> list[np.ndarray]:
+    """A wide orbit followed by a close pass over the working area.
 
-    Height varies because a single-height orbit gives a degenerate
-    reconstruction: every camera on one circle leaves the vertical scale
-    poorly constrained.
+    Two phases, and the second one is not optional. A scan that only orbits
+    wide cannot localize demo clips shot close: the first real capture had a
+    1.55 m orbit against demos shot at 0.6 m, roughly a sixfold scale
+    difference, and the best demo-to-scan feature match gave 126 features
+    where scan-to-scan neighbours gave over 700. Stage 2 could not recover a
+    pose from that.
+
+    So the second phase comes in to the demo camera's own distance and height
+    and covers the working area from there. That is also the advice given to
+    the operator in `wristview-videos/README.md`.
+
+    Height varies within each phase because a single-height orbit leaves the
+    vertical scale poorly constrained.
     """
     poses = []
     target_base = np.array([0.0, 0.0, TABLE_TOP_Z])
+    wide_count = int(round(count * (1.0 - close_fraction)))
+
     for i in range(count):
-        phase = i / count
-        angle = phase * 2.0 * np.pi * 1.25
-        radius = 1.55 + 0.28 * np.sin(phase * 2.0 * np.pi * 2.0)
-        height = 1.18 + 0.42 * np.sin(phase * 2.0 * np.pi * 1.5 + 0.6)
+        if i < wide_count:
+            # Wide orbit: establishes the room and the table's surroundings.
+            phase = i / max(wide_count, 1)
+            angle = phase * 2.0 * np.pi * 1.25
+            radius = 1.55 + 0.28 * np.sin(phase * 2.0 * np.pi * 2.0)
+            height = 1.18 + 0.42 * np.sin(phase * 2.0 * np.pi * 1.5 + 0.6)
+            target = target_base
+        else:
+            # Close pass: the demo camera sits about 0.6 m out at 1.38 m high,
+            # so cover that band and sweep the working area under it.
+            phase = (i - wide_count) / max(count - wide_count, 1)
+            angle = -np.pi / 2 + (phase - 0.5) * 2.4
+            radius = 0.62 + 0.16 * np.sin(phase * 2.0 * np.pi * 1.5)
+            height = 1.34 + 0.16 * np.sin(phase * 2.0 * np.pi * 2.0 + 0.3)
+            target = target_base + np.array(
+                [0.10 * np.sin(phase * 2 * np.pi), 0.08 * np.cos(phase * 2 * np.pi), 0.0]
+            )
+
         eye = np.array([radius * np.cos(angle), radius * np.sin(angle), height])
         # Hand-held jitter. A perfectly smooth orbit is not what real footage
         # looks like, and the reconstruction should survive the real thing.
         eye = eye + rng.normal(0, 0.006, 3)
-        target = target_base + rng.normal(0, 0.012, 3)
-        poses.append(look_at_pose(eye, target))
+        poses.append(look_at_pose(eye, target + rng.normal(0, 0.012, 3)))
     return poses
 
 

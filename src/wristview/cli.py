@@ -273,6 +273,75 @@ def _parse_overrides(pairs: list[str]) -> dict:
     return out
 
 
+def command_preflight(args: argparse.Namespace) -> int:
+    """Answer one question: will these two clips localize?"""
+    import logging
+
+    from .device import resolve as resolve_device
+    from .preflight import PASS_RATIO, run_preflight
+
+    scan = Path(args.scan).resolve()
+    demo = Path(args.demo).resolve()
+    for path in (scan, demo):
+        if not path.exists():
+            print(f"not found: {path}", file=sys.stderr)
+            return 2
+
+    # The whole point is a number and a verdict, so silence everything else
+    # unless the caller asks for the working.
+    setup(None, verbose=False)
+    if not args.verbose:
+        logging.getLogger().setLevel(logging.ERROR)
+
+    device = resolve_device("auto", True)
+    try:
+        result = run_preflight(
+            scan, demo, device,
+            scan_frames=args.scan_frames,
+            demo_frames=args.demo_frames,
+            max_keypoints=args.max_keypoints,
+        )
+    except Exception as exc:  # noqa: BLE001 - a one-line answer, even on failure
+        print(f"FAIL  could not measure: {exc}")
+        return 1
+
+    print(f"scan self-match   {result.reference_matches:6.0f} features   (the ceiling this footage supports)")
+    print(f"demo to scan      {result.demo_matches:6.0f} features   (best scan frame, median over {result.demo_frames} demo frames)")
+    print(f"ratio             {result.ratio:6.2f}              (pass needs {PASS_RATIO:.2f})")
+    print()
+    print(f"{result.verdict}")
+    if result.verdict != "PASS":
+        print()
+        print("The scan does not cover the demo's viewpoint. After the wide orbit,")
+        print("scan the working area again from the demo camera's height and framing.")
+    return 0 if result.passed else 1
+
+
+def command_marker(args: argparse.Namespace) -> int:
+    """Write a printable ArUco marker at an exact physical size."""
+    from .marker import generate, verify
+
+    setup(None, verbose=False)
+    path = generate(
+        Path(args.out), side_m=args.side_cm / 100.0, marker_id=args.id,
+        dictionary_name=args.dictionary,
+    )
+    found = verify(path, args.dictionary)
+    if args.id not in found:
+        print(f"generated {path} but detection failed, found {found}", file=sys.stderr)
+        return 1
+
+    print(f"wrote {path}")
+    print(f"  marker {args.id} of {args.dictionary}, black square {args.side_cm:.1f} cm")
+    print()
+    print("  1. print at 100 percent, no fit-to-page")
+    print("  2. measure the printed line and confirm it is "
+          f"{args.side_cm:.1f} cm")
+    print("  3. lie it flat in the scene, in view for much of the scan")
+    print(f"  4. set scene.scale.aruco_marker_length_m to {args.side_cm / 100:.4f}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="wristview",
@@ -308,6 +377,27 @@ def build_parser() -> argparse.ArgumentParser:
     stage_parser.add_argument("--set", nargs="*", default=None)
     stage_parser.add_argument("-v", "--verbose", action="store_true")
     stage_parser.set_defaults(func=command_stage)
+
+    pre_parser = subparsers.add_parser(
+        "preflight", help="will a scan and a demo localize? answers in under a minute"
+    )
+    pre_parser.add_argument("--scan", required=True, help="room or workspace scan video")
+    pre_parser.add_argument("--demo", required=True, help="one demo clip")
+    pre_parser.add_argument("--scan-frames", type=int, default=30)
+    pre_parser.add_argument("--demo-frames", type=int, default=6)
+    pre_parser.add_argument("--max-keypoints", type=int, default=1024)
+    pre_parser.add_argument("-v", "--verbose", action="store_true")
+    pre_parser.set_defaults(func=command_preflight)
+
+    marker_parser = subparsers.add_parser(
+        "marker", help="write a printable ArUco marker for metric scale"
+    )
+    marker_parser.add_argument("--out", default="aruco_marker.png")
+    marker_parser.add_argument("--side-cm", type=float, default=15.0,
+                               help="printed side of the black square, in cm")
+    marker_parser.add_argument("--id", type=int, default=0)
+    marker_parser.add_argument("--dictionary", default="DICT_4X4_50")
+    marker_parser.set_defaults(func=command_marker)
 
     return parser
 
