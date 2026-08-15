@@ -507,6 +507,20 @@ def run(ctx: RunContext) -> dict:
         ingest_dir = ctx.stage_dir(0, create=False)
         manifest = read_json(ingest_dir / "manifest.json")
         intrinsics_all = read_json(ingest_dir / "intrinsics.json")
+
+        # Stage 1 self-calibrates the camera, and every metric measurement
+        # downstream must use that result rather than Stage 0's prior. On this
+        # capture the prior was 1836 px against a refined 2819, a factor of
+        # 1.535, and lifting the hand with the prior put it roughly 20 cm
+        # below the desk: the end effector's whole z range sat outside the
+        # reconstructed scene, with no cloud point within 10 cm of it.
+        refined_intrinsics = None
+        cameras_path = ctx.stage_dir(1, create=False) / "cameras.json"
+        if cameras_path.exists():
+            refined_intrinsics = Intrinsics.from_dict(read_json(cameras_path)["intrinsics"])
+            log.info("using the refined camera from Stage 1: f=%.1f px", refined_intrinsics.fx)
+        else:
+            log.warning("no refined camera from Stage 1; falling back to the Stage 0 prior")
         localize_summary = read_json(ctx.stage_dir(2, create=False) / "summary.json")
         sources = read_json(ctx.root / "sources.json")
         instruction = sources.get("instruction") or "the object"
@@ -628,7 +642,7 @@ def run(ctx: RunContext) -> dict:
                 continue
 
             log.info("--- Stage 3: %s ---", clip_id)
-            intrinsics = Intrinsics.from_dict(intrinsics_all[clip_id])
+            intrinsics = refined_intrinsics or Intrinsics.from_dict(intrinsics_all[clip_id])
             camera_poses = np.load(
                 ctx.episode_dir(2, clip_id, create=False) / "camera_poses.npy"
             )

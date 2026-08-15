@@ -25,3 +25,8 @@ wristview-videos/*.MOV
 wristview-videos/*.MP4
 
 .DS_Store
+
+# Rendered deliverables. Videos are large; regenerate with tools/render_wrist_videos.py
+deliverables/**/*.mp4
+deliverables/**/*.png
+exports/

@@ -12,6 +12,7 @@ Silicon, for perhaps forty triangles.
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 
 from ..logging_setup import get
@@ -223,3 +224,79 @@ def composite(
         out_depth[nearer] = depth[nearer]
         out_color[nearer] = color[nearer]
     return out_color, out_depth
+
+
+def rasterize_points_fast(
+    points: np.ndarray,
+    colors: np.ndarray,
+    view_matrix: np.ndarray,
+    fx: float, fy: float, cx: float, cy: float,
+    width: int, height: int,
+    near: float = 0.02,
+    far: float = 10.0,
+    splat_px: int = 1,
+    fill_holes: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorised z-buffered point rendering.
+
+    The per-point loop in `rasterize_points` is fine for the few hundred points
+    of an object model and hopeless for a million-point scene cloud: it is one
+    Python iteration per point per frame.
+
+    This projects every point at once, sorts far to near, and lets ordinary
+    fancy-indexing assignment resolve occlusion, because the last write to a
+    pixel wins and the nearest point is written last.
+
+    `splat_px` widens each point into a square of that radius, which closes
+    the gaps a finite point set always leaves. `fill_holes` then fills any
+    single-pixel gaps left over from the nearest neighbour that already has a
+    value, which is honest for display and must not be mistaken for measured
+    geometry.
+    """
+    depth_buffer = np.full((height, width), np.inf, dtype=np.float64)
+    color_buffer = np.zeros((height, width, 3), dtype=np.float64)
+    if len(points) == 0:
+        return color_buffer, depth_buffer
+
+    rotation, translation = view_matrix[:3, :3], view_matrix[:3, 3]
+    cam = points @ rotation.T + translation
+    z = cam[:, 2]
+
+    visible = (z > near) & (z < far)
+    if not visible.any():
+        return color_buffer, depth_buffer
+    cam, z = cam[visible], z[visible]
+    rgb = colors[visible] if colors is not None else np.tile([0.7, 0.7, 0.7], (len(cam), 1))
+
+    px = np.round(fx * cam[:, 0] / z + cx).astype(np.int64)
+    py = np.round(fy * cam[:, 1] / z + cy).astype(np.int64)
+
+    # Far to near, so the nearest write lands last and wins.
+    order = np.argsort(-z)
+    px, py, z, rgb = px[order], py[order], z[order], rgb[order]
+
+    for dy in range(-splat_px, splat_px + 1):
+        for dx in range(-splat_px, splat_px + 1):
+            xs, ys = px + dx, py + dy
+            inside = (xs >= 0) & (xs < width) & (ys >= 0) & (ys < height)
+            if not inside.any():
+                continue
+            color_buffer[ys[inside], xs[inside]] = rgb[inside]
+            depth_buffer[ys[inside], xs[inside]] = z[inside]
+
+    if fill_holes:
+        covered = np.isfinite(depth_buffer).astype(np.uint8)
+        holes = cv2.dilate(covered, np.ones((3, 3), np.uint8)) - covered
+        if holes.any():
+            filled = cv2.dilate(
+                (np.clip(color_buffer, 0, 1) * 255).astype(np.uint8),
+                np.ones((3, 3), np.uint8),
+            )
+            mask = holes.astype(bool)
+            color_buffer[mask] = filled[mask] / 255.0
+            depth_buffer[mask] = cv2.dilate(
+                np.where(np.isfinite(depth_buffer), depth_buffer, 0).astype(np.float32),
+                np.ones((3, 3), np.uint8),
+            )[mask]
+
+    return color_buffer, depth_buffer
