@@ -493,13 +493,25 @@ def localize_frame(
     if result is None:
         return None, diagnostics
 
-    inliers = int(np.sum(result["inliers"]))
+    # pycolmap 4.1 returns `num_inliers` and `inlier_mask`. Older builds
+    # returned `inliers`. Accept either rather than crash on the name.
+    if "num_inliers" in result:
+        inliers = int(result["num_inliers"])
+    elif "inlier_mask" in result:
+        inliers = int(np.sum(result["inlier_mask"]))
+    elif "inliers" in result:
+        inliers = int(np.sum(result["inliers"]))
+    else:
+        raise KeyError(
+            f"absolute pose result has no inlier count; keys are {sorted(result)}"
+        )
+
     diagnostics["inliers"] = inliers
     if inliers < min_inliers:
         return None, diagnostics
 
     world_from_cam = np.eye(4)
-    world_from_cam[:3, :4] = result["cam_from_world"].matrix()
+    world_from_cam[:3, :4] = np.asarray(result["cam_from_world"].matrix())
     return invert_pose(world_from_cam), diagnostics
 
 

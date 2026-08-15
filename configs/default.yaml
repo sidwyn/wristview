@@ -131,6 +131,15 @@ localize:
   max_tracking_loss: 0.02
   ransac_max_error_px: 12.0
   ransac_min_inliers: 12
+  # Physical plausibility, checked because a registration rate proves nothing
+  # on its own. PnP returns a pose whenever it finds enough inliers, and with
+  # weak geometry those poses are individually valid and collectively
+  # nonsense. On the first real footage every frame registered while the
+  # camera appeared to travel 19 m in 7.8 s across a 0.53 m scene.
+  max_camera_speed_m_s: 2.0
+  # Median inliers over correspondences. Scan frames self-localize at 0.92;
+  # demo frames that barely overlap the scan sat at 0.19.
+  min_inlier_ratio: 0.35
   smoothing_window: 5
   # Scan frames to match each demo frame against. This multiplies the whole
   # stage: every extra one is another LightGlue pair per demo frame.
