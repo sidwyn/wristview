@@ -100,7 +100,12 @@ scene:
     densify_until_iter: 2000
     densify_interval: 100
     densify_grad_threshold: 0.0004
-    opacity_reset_interval: 1500
+    # Upstream 3DGS resets opacity every 3000 steps of a 30000 step run, to
+    # clear floaters. This schedule is 3000 steps in total, so a reset at 1500
+    # knocks every Gaussian to 0.01 opacity with too little left to recover:
+    # PSNR fell 19.9 to 16.4 dB across the reset and never came back. 0
+    # disables it. Raise the iteration count first if floaters are a problem.
+    opacity_reset_interval: 0
     prune_opacity_threshold: 0.005
     max_gaussians: 400000
     tile_size: 16

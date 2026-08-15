@@ -318,3 +318,76 @@ class TestDensification:
 
         densifier.step(model, optimizer)
         assert model.count <= cap + 1, f"cap {cap} exceeded: {model.count}"
+
+
+class TestDensityScaling:
+    """Rendering must not blow up as the splat grows.
+
+    Compositing every tile slot at once held the whole (pixels, slots) tensor
+    for the backward pass. A 51k-Gaussian room splat at 720p exhausted 30 GB
+    of MPS memory partway through training, and before that it degraded:
+    PSNR fell from 22.7 dB at 13k Gaussians to 17.9 dB at 44k, because slots
+    past the cap were dropped. The loop now walks the list in blocks and stops
+    once every pixel is saturated.
+    """
+
+    def _dense_model(self, count: int) -> GaussianModel:
+        rng = np.random.default_rng(0)
+        points = rng.normal(0, 0.6, (count, 3)).astype(np.float32)
+        points[:, 2] += 3.0
+        colors = rng.uniform(0, 1, (count, 3)).astype(np.float32)
+        return GaussianModel(
+            torch.from_numpy(points), torch.from_numpy(colors), sh_degree=0, device=DEVICE
+        )
+
+    def test_renders_a_dense_splat_at_training_resolution(self):
+        model = self._dense_model(60_000)
+        result = render(
+            model, identity_view(), 700.0, 700.0, 360.0, 202.0, 720, 405,
+            tile_size=16, max_per_tile=128,
+        )
+        assert result.rgb.shape == (405, 720, 3)
+        assert torch.isfinite(result.rgb).all()
+        assert float(result.alpha.mean()) > 0.01
+
+    def test_backward_through_a_dense_splat(self):
+        model = self._dense_model(40_000)
+        model.train()
+        result = render(
+            model, identity_view(), 700.0, 700.0, 360.0, 202.0, 720, 405,
+            tile_size=16, max_per_tile=128,
+        )
+        result.rgb.mean().backward()
+        assert torch.isfinite(model.means.grad).all()
+        assert float(model.means.grad.abs().sum()) > 0
+
+    def test_depth_block_size_does_not_change_the_image(self):
+        """Blocking is an implementation detail, so it must be invisible."""
+        model = self._dense_model(4_000)
+        common = dict(tile_size=16, max_per_tile=128)
+        a = render(model, identity_view(), 300.0, 300.0, 160.0, 120.0, 320, 240,
+                   depth_block=16, **common)
+        b = render(model, identity_view(), 300.0, 300.0, 160.0, 120.0, 320, 240,
+                   depth_block=64, **common)
+        assert torch.allclose(a.rgb, b.rgb, atol=1e-5), (
+            f"max difference {float((a.rgb - b.rgb).abs().max()):.2e}"
+        )
+        assert torch.allclose(a.alpha, b.alpha, atol=1e-5)
+
+    def test_opaque_foreground_saturates_and_hides_what_is_behind(self):
+        # The property the early exit relies on.
+        near = torch.tensor([[0.0, 0.0, 1.0]]).repeat(40, 1)
+        far = torch.tensor([[0.0, 0.0, 6.0]]).repeat(40, 1)
+        points = torch.cat([near, far])
+        colors = torch.cat([
+            torch.tensor([[1.0, 0.0, 0.0]]).repeat(40, 1),
+            torch.tensor([[0.0, 0.0, 1.0]]).repeat(40, 1),
+        ])
+        model = GaussianModel(points, colors, torch.full((80, 3), 0.2),
+                              sh_degree=0, device=DEVICE)
+        with torch.no_grad():
+            model.opacity_logit.fill_(4.0)
+        result = render(model, identity_view(), 300.0, 300.0, 64.0, 64.0, 128, 128)
+        centre = result.rgb[64, 64]
+        assert float(centre[0]) > 0.5
+        assert float(centre[2]) < 0.1

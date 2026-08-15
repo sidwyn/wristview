@@ -17,11 +17,14 @@ The rasterizer follows Kerbl et al. 2023:
   alpha-composite front to back.
 
 The one structural difference from the CUDA original is the compositing loop.
-CUDA walks each tile's list sequentially with early termination. Here the tile
-lists are padded to a fixed depth and composited with an exclusive cumulative
-product, because that is one parallel kernel instead of a serial loop and MPS
-rewards it. The cost is a cap on Gaussians per tile, which is
-`max_per_tile` below.
+CUDA walks each tile's list one Gaussian at a time, stopping once a pixel is
+opaque. Here the list is walked in blocks of `depth_block`, compositing each
+block with a cumulative product and carrying transmittance across blocks, then
+stopping when every pixel in the chunk is saturated. Blocks rather than single
+Gaussians because MPS rewards fewer, larger kernels; the early exit because
+without it the whole (pixels, slots) tensor is held for the backward pass, and
+a 51k-Gaussian room splat at 720p exhausted 30 GB of MPS memory mid-training.
+`max_per_tile` remains the hard cap on Gaussians composited per tile.
 """
 
 from __future__ import annotations
@@ -352,6 +355,7 @@ def render(
     far: float = 100.0,
     max_pixels_per_chunk: int = 262144,
     max_tiles_per_gaussian: int | None = None,
+    depth_block: int = 32,
 ) -> RenderResult:
     """Rasterize the Gaussians into one image.
 
@@ -479,49 +483,79 @@ def render(
 
     # Chunk over tiles so peak memory stays bounded regardless of resolution.
     pixels_per_tile = tile_size * tile_size
-    tiles_per_chunk = max(1, max_pixels_per_chunk // (pixels_per_tile * max(max_per_tile // 32, 1)))
+    tiles_per_chunk = max(1, max_pixels_per_chunk // pixels_per_tile)
 
+    # Composite each tile's list in blocks along the depth axis, carrying
+    # transmittance between blocks and stopping once every pixel in the chunk
+    # is saturated.
+    #
+    # Materializing all `max_per_tile` slots at once is what an earlier
+    # version did, and it does not scale: the (pixels, slots) tensors are held
+    # for the backward pass, so a 51k-Gaussian room splat at 720p exhausted
+    # 30 GB of MPS memory mid-training. Blocking bounds peak memory, and the
+    # early exit means a saturated tile stops paying for Gaussians behind it,
+    # which is what the CUDA implementation gets from its serial loop.
     for start in range(0, num_tiles, tiles_per_chunk):
         stop = min(start + tiles_per_chunk, num_tiles)
         chunk_slots = slots[start:stop]                     # (T, K)
-        valid = chunk_slots >= 0
-        if not bool(valid.any()):
+        if not bool((chunk_slots >= 0).any()):
             continue
-        safe_slots = chunk_slots.clamp_min(0)
 
-        mean_c = uv_s[safe_slots]                            # (T, K, 2)
-        conic_c = conic_s[safe_slots]                        # (T, K, 3)
-        op_c = opacity_s[safe_slots]                         # (T, K)
-        col_c = colors_s[safe_slots]                         # (T, K, 3)
-        dep_c = depth_s[safe_slots]                          # (T, K)
+        rows = stop - start
+        transmittance = torch.ones(rows, pixels_per_tile, device=device, dtype=dtype)
+        rgb_acc = torch.zeros(rows, pixels_per_tile, 3, device=device, dtype=dtype)
+        alpha_acc = torch.zeros(rows, pixels_per_tile, device=device, dtype=dtype)
+        depth_acc = torch.zeros(rows, pixels_per_tile, device=device, dtype=dtype)
 
-        dx = pix_x[start:stop, :, None] - mean_c[:, None, :, 0]   # (T, P, K)
-        dy = pix_y[start:stop, :, None] - mean_c[:, None, :, 1]
+        for block_start in range(0, max_per_tile, depth_block):
+            block_stop = min(block_start + depth_block, max_per_tile)
+            block = chunk_slots[:, block_start:block_stop]
+            valid = block >= 0
+            if not bool(valid.any()):
+                break
+            safe = block.clamp_min(0)
 
-        power = -0.5 * (
-            conic_c[:, None, :, 0] * dx * dx
-            + 2.0 * conic_c[:, None, :, 1] * dx * dy
-            + conic_c[:, None, :, 2] * dy * dy
-        )
-        alpha = op_c[:, None, :] * torch.exp(power.clamp(max=0.0))
-        alpha = alpha * valid[:, None, :].to(dtype)
-        # Cap at 0.99 so a single Gaussian can never fully occlude and kill
-        # the gradient path to everything behind it.
-        alpha = alpha.clamp(0.0, 0.99)
+            mean_c = uv_s[safe]                              # (T, B, 2)
+            conic_c = conic_s[safe]                          # (T, B, 3)
+            op_c = opacity_s[safe]                           # (T, B)
+            col_c = colors_s[safe]                           # (T, B, 3)
+            dep_c = depth_s[safe]                            # (T, B)
 
-        one_minus = 1.0 - alpha
-        transmittance = torch.cat(
-            [
-                torch.ones_like(one_minus[:, :, :1]),
-                torch.cumprod(one_minus, dim=2)[:, :, :-1],
-            ],
-            dim=2,
-        )
-        weight = alpha * transmittance                       # (T, P, K)
+            dx = pix_x[start:stop, :, None] - mean_c[:, None, :, 0]   # (T, P, B)
+            dy = pix_y[start:stop, :, None] - mean_c[:, None, :, 1]
 
-        rgb_flat[start:stop] = torch.einsum("tpk,tkc->tpc", weight, col_c)
-        alpha_flat[start:stop] = weight.sum(dim=2)
-        depth_flat[start:stop] = torch.einsum("tpk,tk->tp", weight, dep_c)
+            power = -0.5 * (
+                conic_c[:, None, :, 0] * dx * dx
+                + 2.0 * conic_c[:, None, :, 1] * dx * dy
+                + conic_c[:, None, :, 2] * dy * dy
+            )
+            alpha = op_c[:, None, :] * torch.exp(power.clamp(max=0.0))
+            alpha = alpha * valid[:, None, :].to(dtype)
+            # Cap at 0.99 so a single Gaussian can never fully occlude and
+            # kill the gradient path to everything behind it.
+            alpha = alpha.clamp(0.0, 0.99)
+
+            one_minus = 1.0 - alpha
+            running = torch.cumprod(one_minus, dim=2)
+            # Transmittance entering each slot: what survived earlier blocks,
+            # times what survived earlier slots inside this block.
+            within = torch.cat(
+                [torch.ones_like(running[:, :, :1]), running[:, :, :-1]], dim=2
+            )
+            weight = alpha * transmittance[:, :, None] * within   # (T, P, B)
+
+            rgb_acc = rgb_acc + torch.einsum("tpk,tkc->tpc", weight, col_c)
+            alpha_acc = alpha_acc + weight.sum(dim=2)
+            depth_acc = depth_acc + torch.einsum("tpk,tk->tp", weight, dep_c)
+            transmittance = transmittance * running[:, :, -1]
+
+            # Nothing behind a saturated pixel can change it.
+            if float(transmittance.detach().max()) < 1e-4:
+                break
+
+        rgb_flat[start:stop] = rgb_acc
+        alpha_flat[start:stop] = alpha_acc
+        depth_flat[start:stop] = depth_acc
 
     # Un-tile back to an image.
     rgb_img = _untile(rgb_flat, tiles_x, tiles_y, tile_size, height, width, channels=3)
