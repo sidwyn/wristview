@@ -48,6 +48,14 @@ PREFLIGHT_EVIDENCE = (
     "raw, ratio 0.76, and five clips localized."
 )
 
+# The scan self-match ceiling is measured between frames about this far apart
+# in time. The number matters: adjacent frames at 6 fps are 0.17 s apart and
+# match almost perfectly, which inflates the ceiling and makes every ratio
+# look worse. Measured on the same scan, adjacent pairs gave 770 matches and
+# 1 second pairs gave 572, which moved one clip from pass to fail purely by
+# choice of reference. A ceiling has to represent a real viewpoint change.
+SELF_MATCH_BASELINE_S = 1.0
+
 MARKER_POSITION_MAX_CM = 3.0
 MARKER_ROTATION_MAX_DEG = 5.0
 MARKER_MIN_COVERAGE = 0.50

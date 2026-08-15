@@ -30,15 +30,16 @@ import numpy as np
 
 from .backends import sfm
 from .logging_setup import get
+# Thresholds come from qc.py so there is exactly one definition. Two copies
+# drift, and a preflight that disagrees with the gate it predicts is worse
+# than no preflight: an inflated ceiling in the Stage 2 copy failed a clip the
+# standalone tool had passed.
+from .qc import PREFLIGHT_PASS_RATIO as PASS_RATIO
+from .qc import PREFLIGHT_WARN_RATIO as WARN_RATIO
+from .qc import SELF_MATCH_BASELINE_S
 from .videoio import extract_frames, probe
 
 log = get(__name__)
-
-# Calibrated against two known cases, both measured rather than assumed:
-# the synthetic fixture, whose demos and scan share viewpoints and which the
-# pipeline localizes, and the first real capture, which it cannot.
-PASS_RATIO = 0.40
-WARN_RATIO = 0.25
 
 
 @dataclass
@@ -105,8 +106,12 @@ def run_preflight(
         sfm.extract_features(scan_dir, scan_names, scan_features, device, max_keypoints)
         sfm.extract_features(demo_dir, demo_names, demo_features, device, max_keypoints)
 
-        # Reference ceiling: consecutive scan frames, which overlap by design.
-        reference_pairs = list(zip(scan_names[:-1], scan_names[1:], strict=False))
+        # Reference ceiling across a real viewpoint change, not between
+        # adjacent frames. See SELF_MATCH_BASELINE_S in qc.py: adjacent frames
+        # match almost perfectly and inflate the ceiling.
+        sampled_fps = len(scan_names) / max(scan_info.duration_s, 1e-3)
+        gap = max(1, int(round(SELF_MATCH_BASELINE_S * sampled_fps)))
+        reference_pairs = list(zip(scan_names[:-gap], scan_names[gap:], strict=False))
         reference_path = workdir / "reference.h5"
         sfm.match_pairs(reference_pairs, scan_features, reference_path, device)
         reference_counts = _match_counts(reference_path, reference_pairs)

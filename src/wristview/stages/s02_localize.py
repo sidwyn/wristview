@@ -22,7 +22,13 @@ from ..camera import Intrinsics
 from ..device import resolve as resolve_device
 from ..geometry import slerp_fill, smooth_poses
 from ..logging_setup import get
-from ..qc import estimate_marker_world_pose, marker_agreement, marker_gates, preflight_gate
+from ..qc import (
+    SELF_MATCH_BASELINE_S,
+    estimate_marker_world_pose,
+    marker_agreement,
+    marker_gates,
+    preflight_gate,
+)
 from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
 
 log = get(__name__)
@@ -64,17 +70,34 @@ def _match_counts(path, pairs: list[tuple[str, str]]) -> list[int]:
     return counts
 
 
-def _scan_self_match_ceiling(ctx: RunContext, scan_names: list[str]) -> float:
-    """How well the scan matches itself, neighbour to neighbour.
+def _scan_self_match_ceiling(ctx: RunContext, scan_names: list[str], scan_fps: float) -> float:
+    """How well the scan matches itself across a real viewpoint change.
 
     The ceiling this footage supports. Comparing a demo against it cancels
     texture, resolution and keypoint budget, which an absolute count does not.
+
+    The baseline is a time gap, not one frame. Adjacent frames at 6 fps are
+    0.17 s apart and match almost perfectly, which inflates the ceiling: the
+    same scan measured 770 that way against 572 across a 1 second gap, and the
+    difference moved a clip from pass to fail with nothing about the footage
+    having changed.
     """
     matches_path = ctx.stage_dir(1, create=False) / "matches.h5"
     if not matches_path.exists() or len(scan_names) < 2:
         return 0.0
-    pairs = list(zip(scan_names[:-1], scan_names[1:], strict=False))
+
+    gap = max(1, int(round(SELF_MATCH_BASELINE_S * scan_fps)))
+    pairs = list(zip(scan_names[:-gap], scan_names[gap:], strict=False))
     counts = _match_counts(matches_path, pairs)
+    if not counts:
+        # Stage 1 pairs frames by retrieval, so a wide gap may not have been
+        # matched at all. Fall back to adjacent and say so.
+        log.warning(
+            "no scan pairs %d frames apart were matched; falling back to "
+            "adjacent frames, which inflates the ceiling", gap,
+        )
+        pairs = list(zip(scan_names[:-1], scan_names[1:], strict=False))
+        counts = _match_counts(matches_path, pairs)
     return float(np.median(counts)) if counts else 0.0
 
 
@@ -92,6 +115,7 @@ def _localize_episode(
     cfg: dict,
     scan_self_matches: float = 0.0,
     marker_world: np.ndarray | None = None,
+    refined_intrinsics: Intrinsics | None = None,
 ) -> dict:
     """Register one demo episode against the scan reconstruction."""
     import pycolmap
@@ -104,6 +128,7 @@ def _localize_episode(
     matches_path = out_dir / "matches.h5"
 
     verify_frames_present(frames_dir, frame_names, clip_id)
+    refined_intrinsics = refined_intrinsics or intrinsics
     force = bool(cfg.get("force_rematch", False))
 
     with rec.timed(f"features.{clip_id}"):
@@ -332,7 +357,12 @@ def _localize_episode(
     if marker_length and valid.any():
         with rec.timed(f"marker_check.{clip_id}"):
             agreement = marker_agreement(
-                frames_dir, frame_names, smoothed, valid, intrinsics,
+                # The refined camera, never the Stage 0 prior. PnP solves
+                # against the refined focal, so checking with the guess
+                # compares two different cameras: on this capture the prior
+                # was 1836 px against a refined 2819, and the check reported a
+                # flat 21 cm and 7.2 degrees of "disagreement" on every clip.
+                frames_dir, frame_names, smoothed, valid, refined_intrinsics,
                 side_m=float(marker_length),
                 dictionary_name=scale_cfg.get("aruco_dict", "DICT_4X4_50"),
                 marker_id=int(scale_cfg.get("aruco_marker_id") or 0),
@@ -436,10 +466,19 @@ def run(ctx: RunContext) -> dict:
         scan = manifest["clips"]["scan"]
         scan_frames_dir = ctx.root / scan["frames_dir"]
         scan_names = scan["frame_names"]
+
+        # Stage 1 self-calibrates the camera, so its refined intrinsics are
+        # what every later measurement must use.
+        cameras_payload = read_json(ctx.stage_dir(1, create=False) / "cameras.json")
+        refined_intrinsics = Intrinsics.from_dict(cameras_payload["intrinsics"])
+        log.info("refined camera from Stage 1: f=%.1f px", refined_intrinsics.fx)
         with rec.timed("scan_descriptors"):
             scan_descriptors = sfm.global_descriptors(scan_frames_dir, scan_names)
         with rec.timed("scan_self_match"):
-            scan_self_matches = _scan_self_match_ceiling(ctx, scan_names)
+            scan_self_matches = _scan_self_match_ceiling(
+                ctx, scan_names,
+                float(scan.get("effective_fps") or scan["video_info"]["fps"]),
+            )
         log.info("scan self-match ceiling: %.0f features", scan_self_matches)
         rec.metric("scan_self_match_ceiling", scan_self_matches)
 
@@ -448,13 +487,12 @@ def run(ctx: RunContext) -> dict:
         marker_world = None
         scale_cfg_top = ctx.config.section("scene").get("scale", {})
         if scale_cfg_top.get("aruco_marker_length_m"):
-            scan_poses_payload = read_json(ctx.stage_dir(1, create=False) / "cameras.json")
-            names = [f["name"] for f in scan_poses_payload["frames"]]
-            poses = np.array([f["pose_world_from_cam"] for f in scan_poses_payload["frames"]])
+            names = [f["name"] for f in cameras_payload["frames"]]
+            poses = np.array([f["pose_world_from_cam"] for f in cameras_payload["frames"]])
             with rec.timed("marker_world"):
                 marker_world = estimate_marker_world_pose(
                     scan_frames_dir, names, poses, np.ones(len(names), bool),
-                    Intrinsics.from_dict(scan_poses_payload["intrinsics"]),
+                    refined_intrinsics,
                     float(scale_cfg_top["aruco_marker_length_m"]),
                     scale_cfg_top.get("aruco_dict", "DICT_4X4_50"),
                     int(scale_cfg_top.get("aruco_marker_id") or 0),
@@ -476,6 +514,7 @@ def run(ctx: RunContext) -> dict:
                 ctx, rec, clip_id, clip, intrinsics, reconstruction,
                 scan_names, scan_frames_dir, scan_descriptors, device, cfg,
                 scan_self_matches=scan_self_matches, marker_world=marker_world,
+                refined_intrinsics=refined_intrinsics,
             )
             rec.output(f"{clip_id}_poses", ctx.episode_dir(STAGE, clip_id) / "camera_poses.npy")
 

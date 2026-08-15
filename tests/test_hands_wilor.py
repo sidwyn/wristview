@@ -19,7 +19,23 @@ import pytest
 from wristview.backends import hands as hand_backend
 from wristview.camera import Intrinsics
 
-FRAMES_DIR = Path(__file__).resolve().parents[1] / "wristview-videos" / "a3" / "frames"
+
+def _find_frames_dir() -> Path:
+    """The verification stills, wherever the capture folders put them.
+
+    Sessions are filed by date, so the path moved once and silently skipped
+    seven tests. Search rather than hardcode.
+    """
+    root = Path(__file__).resolve().parents[1] / "wristview-videos"
+    direct = root / "a3" / "frames"
+    if direct.exists():
+        return direct
+    for candidate in sorted(root.glob("*/a3/frames")):
+        return candidate
+    return direct
+
+
+FRAMES_DIR = _find_frames_dir()
 
 # The roles come from a3/README.md. Control frames show an open hand, test
 # frames show the fingers wrapped around the glass.
