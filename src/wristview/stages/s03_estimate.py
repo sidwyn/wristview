@@ -173,6 +173,23 @@ def _estimate_episode(
     if hand_kind == "synthetic_groundtruth":
         groundtruth_hands = hand_backend.GroundTruthHands(models["groundtruth_path"], clip_id)
 
+    # The object and depth path runs at a reduced resolution. Rendering splat
+    # depth at the demo's native 2160x1214 is 2.6 million pixels a frame, and
+    # nothing downstream needs that: the mask, the monocular depth, and the
+    # back-projected points all feed a rigid fit whose accuracy is set by the
+    # depth model, not by pixel count. Hand estimation stays at full
+    # resolution, because WiLoR crops around the hand and detail matters there.
+    work_long_side = int(cfg.get("work_resolution", 640))
+    work_scale = min(1.0, work_long_side / max(intrinsics.width, intrinsics.height))
+    work_width = max(32, int(round(intrinsics.width * work_scale)))
+    work_height = max(32, int(round(intrinsics.height * work_scale)))
+    work_intrinsics = intrinsics.scaled(work_width, work_height)
+    if work_scale < 1.0:
+        log.info(
+            "%s: object and depth path runs at %dx%d, hand at %dx%d",
+            clip_id, work_width, work_height, intrinsics.width, intrinsics.height,
+        )
+
     def _record(index: int, frame) -> None:
         hand_cam[index] = frame.landmarks_cam
         hand_px[index] = frame.landmarks_px
@@ -229,9 +246,14 @@ def _estimate_episode(
 
     with rec.timed(f"object.{clip_id}"):
         for index, name in enumerate(frame_names):
-            image = cv2.imread(str(frames_dir / name))
-            if image is None:
+            full = cv2.imread(str(frames_dir / name))
+            if full is None:
                 continue
+            image = (
+                cv2.resize(full, (work_width, work_height), interpolation=cv2.INTER_AREA)
+                if work_scale < 1.0
+                else full
+            )
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
             # --- mask ---
@@ -260,12 +282,12 @@ def _estimate_episode(
                     ys, xs = np.nonzero(previous_mask)
                     point = np.array([xs.mean(), ys.mean()], dtype=np.float64)
                 elif hand_valid[index]:
-                    point = hand_backend.grasp_center(hand_px[index])
+                    point = hand_backend.grasp_center(hand_px[index]) * work_scale
                 if point is not None:
                     mask = segmenter.segment(image, point=point)
 
             if mask is None and segmenter is None and hand_valid[index]:
-                point = hand_backend.grasp_center(hand_px[index])
+                point = hand_backend.grasp_center(hand_px[index]) * work_scale
                 mask = object_backend.seed_mask_from_point(image, point)
 
             mask = object_backend.clean_mask(
@@ -293,13 +315,13 @@ def _estimate_episode(
             metric = None
             if splat is not None:
                 reference, reference_valid = _render_splat_depth(
-                    splat, camera_poses[index], intrinsics, device, far
+                    splat, camera_poses[index], work_intrinsics, device, far
                 )
                 if depth_model is not None:
                     relative = depth_model.predict(image)
                     exclude = mask.copy()
                     if hand_valid[index]:
-                        exclude |= _hand_mask(hand_px[index], mask.shape)
+                        exclude |= _hand_mask(hand_px[index] * work_scale, mask.shape)
                     metric, fit = depth_backend.fit_metric_depth(
                         relative, reference, reference_valid, exclude=exclude
                     )
@@ -314,7 +336,7 @@ def _estimate_episode(
             if metric is None:
                 continue
 
-            points_cam = depth_backend.backproject(metric, mask, intrinsics)
+            points_cam = depth_backend.backproject(metric, mask, work_intrinsics)
             if len(points_cam) < 50:
                 continue
             points_world = transform_points(camera_poses[index], points_cam)
@@ -440,7 +462,14 @@ def _write_overlay(
             continue
         mask_path = masks_dir / f"{index:05d}.png"
         if mask_path.exists():
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE) > 127
+            raw = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            # Masks are stored at the object path's working resolution, which
+            # is smaller than the frame.
+            if raw.shape[:2] != image.shape[:2]:
+                raw = cv2.resize(
+                    raw, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST
+                )
+            mask = raw > 127
             tint = image.copy()
             tint[mask] = (0.45 * tint[mask] + 0.55 * np.array([60, 220, 60])).astype(np.uint8)
             image = tint

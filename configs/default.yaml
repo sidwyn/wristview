@@ -107,6 +107,11 @@ localize:
   retrieval_top_k: 20
 
 estimate:
+  # Long side, in pixels, for the object and depth path. Rendering splat depth
+  # at a demo's native 2160x1214 is 2.6 million pixels a frame and nothing
+  # downstream needs it: accuracy there is set by the depth model, not by
+  # pixel count. Hand estimation ignores this and runs at full resolution.
+  work_resolution: 640
   hand:
     # wilor, hamer, mediapipe, or auto.
     # auto order: WiLoR, then HaMeR, then MediaPipe. WiLoR is the one that
