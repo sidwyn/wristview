@@ -19,10 +19,16 @@ pretrained_models/
 
 # Source footage. Large binaries do not belong in git without LFS.
 # The clips live in wristview-videos/ locally; the README says what to put there.
+#
+# Recursive globs, not wristview-videos/*.mov: sessions are filed into dated
+# subfolders, so a single-level pattern stopped matching and 800 MB of video
+# went into a commit before GitHub rejected the push.
+wristview-videos/**/*.mov
+wristview-videos/**/*.mp4
+wristview-videos/**/*.MOV
+wristview-videos/**/*.MP4
 wristview-videos/*.mov
 wristview-videos/*.mp4
-wristview-videos/*.MOV
-wristview-videos/*.MP4
 
 .DS_Store
 
