@@ -397,8 +397,12 @@ def reconstruction_poses(reconstruction) -> dict[str, np.ndarray]:
     for image in reconstruction.images.values():
         if not image.has_pose:
             continue
+        # `cam_from_world` is a method in pycolmap 4.1, while `has_pose`,
+        # `name`, and `points2D` alongside it are properties. Reading it as a
+        # property yields the bound method and fails on `.matrix()`.
+        cam_from_world = np.asarray(image.cam_from_world().matrix())
         world_from_cam = np.eye(4)
-        world_from_cam[:3, :4] = image.cam_from_world.matrix()
+        world_from_cam[:3, :4] = cam_from_world
         poses[image.name] = invert_pose(world_from_cam)
     return poses
 
