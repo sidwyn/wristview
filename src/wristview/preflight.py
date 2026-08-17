@@ -35,9 +35,9 @@ from .logging_setup import get
 # drift, and a preflight that disagrees with the gate it predicts is worse
 # than no preflight: an inflated ceiling in the Stage 2 copy failed a clip the
 # standalone tool had passed.
+from .qc import PREFLIGHT_PASS_MATCHES, PREFLIGHT_WARN_MATCHES
 from .qc import PREFLIGHT_PASS_RATIO as PASS_RATIO
 from .qc import PREFLIGHT_WARN_RATIO as WARN_RATIO
-from .qc import SELF_MATCH_BASELINE_S
 from .videoio import extract_frames, probe
 
 log = get(__name__)
@@ -52,6 +52,8 @@ class PreflightResult:
     ratio: float
     verdict: str
     per_demo_best: list[int]
+    baseline_px: float = float("nan")
+    reference_pairs_used: int = 0
 
     @property
     def passed(self) -> bool:
@@ -107,15 +109,29 @@ def run_preflight(
         sfm.extract_features(scan_dir, scan_names, scan_features, device, max_keypoints)
         sfm.extract_features(demo_dir, demo_names, demo_features, device, max_keypoints)
 
-        # Reference ceiling across a real viewpoint change, not between
-        # adjacent frames. See SELF_MATCH_BASELINE_S in qc.py: adjacent frames
-        # match almost perfectly and inflate the ceiling.
-        sampled_fps = len(scan_names) / max(scan_info.duration_s, 1e-3)
-        gap = max(1, int(round(SELF_MATCH_BASELINE_S * sampled_fps)))
-        reference_pairs = list(zip(scan_names[:-gap], scan_names[gap:], strict=False))
+        # Reference ceiling at a matched baseline, not a matched time interval.
+        #
+        # The old version took scan pairs a fixed number of seconds apart. That
+        # is a proxy for baseline that only holds if the camera moves at one
+        # speed. Session 4 sweeps three passes at three speeds in 69 s, so its
+        # one-second pairs span a much larger baseline than session 3's, the
+        # ceiling collapsed from 572 to 232, and the ratio rose above 1.0 while
+        # the absolute matchability fell. The denominator moved with the thing
+        # it was measuring.
+        #
+        # So sample scan pairs across many gaps, measure how far features
+        # actually travel between them, and keep the ones that move as far as
+        # the demo-to-scan pairs do.
+        gaps = sorted({max(1, int(round(g))) for g in np.linspace(1, len(scan_names) // 3, 8)})
+        reference_pairs = []
+        for gap in gaps:
+            reference_pairs += list(zip(scan_names[:-gap], scan_names[gap:], strict=False))
+        reference_pairs = list(dict.fromkeys(reference_pairs))
         reference_path = workdir / "reference.h5"
         sfm.match_pairs(reference_pairs, scan_features, reference_path, device)
-        reference_counts = _match_counts(reference_path, reference_pairs)
+        reference_stats = _match_stats(
+            reference_path, scan_features, scan_features, reference_pairs
+        )
 
         # Every demo frame against every sampled scan frame. No retrieval step,
         # because retrieval is itself unreliable exactly when this check fails.
@@ -126,19 +142,46 @@ def run_preflight(
         )
 
         per_demo_best = []
+        demo_shifts = []
         for demo_name in demo_names:
-            counts = _match_counts(
-                demo_path, [(demo_name, s) for s in scan_names]
+            stats = _match_stats(
+                demo_path, demo_features, scan_features,
+                [(demo_name, s) for s in scan_names],
             )
-            per_demo_best.append(int(max(counts)) if counts else 0)
+            if not stats:
+                per_demo_best.append(0)
+                continue
+            best = max(stats, key=lambda item: item[0])
+            per_demo_best.append(int(best[0]))
+            if np.isfinite(best[1]):
+                demo_shifts.append(best[1])
+
+        # The baseline the demo actually demands of the scan.
+        baseline_px = float(np.median(demo_shifts)) if demo_shifts else float("nan")
+
+        usable = [(c, d) for c, d in reference_stats if np.isfinite(d)]
+        if usable and np.isfinite(baseline_px):
+            # Scan pairs whose features travel about as far as the demo's do.
+            band = [c for c, d in usable if 0.75 * baseline_px <= d <= 1.33 * baseline_px]
+            if len(band) < 5:
+                # Nothing at that baseline: take the closest pairs instead, and
+                # the log says so, because it means the scan never presented
+                # the viewpoint change the demo needs.
+                nearest = sorted(usable, key=lambda item: abs(item[1] - baseline_px))
+                band = [c for c, _ in nearest[: max(5, len(usable) // 6)]]
+            reference_counts = band
+        else:
+            reference_counts = [c for c, _ in reference_stats]
 
         reference = float(np.median(reference_counts)) if reference_counts else 0.0
         demo = float(np.median(per_demo_best)) if per_demo_best else 0.0
         ratio = demo / reference if reference > 0 else 0.0
 
-        if ratio >= PASS_RATIO:
+        # Both must hold. A good ratio against a poor scan is not a good
+        # capture, and a high count says nothing without knowing the ceiling.
+        if ratio >= PASS_RATIO and demo >= PREFLIGHT_PASS_MATCHES:
             verdict = "PASS"
-        elif ratio >= WARN_RATIO:
+        elif ratio >= WARN_RATIO and demo >= PREFLIGHT_WARN_MATCHES:
             verdict = "MARGINAL"
         else:
             verdict = "FAIL"
@@ -151,10 +194,45 @@ def run_preflight(
             ratio=ratio,
             verdict=verdict,
             per_demo_best=per_demo_best,
+            baseline_px=baseline_px,
+            reference_pairs_used=len(reference_counts),
         )
     finally:
         if owned and workdir.exists():
             shutil.rmtree(workdir, ignore_errors=True)
+
+
+def _match_stats(
+    match_path: Path, features0: Path, features1: Path, pairs: list[tuple[str, str]]
+) -> list[tuple[int, float]]:
+    """Match count and median keypoint displacement, in pixels, per pair.
+
+    Displacement stands in for baseline. A pair of views of the same workspace
+    separated by a larger baseline moves its features further across the image,
+    so matching on displacement compares like with like without needing a
+    reconstruction, which preflight runs before there is one.
+    """
+    import h5py
+
+    out: list[tuple[int, float]] = []
+    with h5py.File(str(match_path), "r", libver="latest") as handle, \
+            h5py.File(str(features0), "r", libver="latest") as f0, \
+            h5py.File(str(features1), "r", libver="latest") as f1:
+        for name0, name1 in pairs:
+            key = sfm.names_to_pair(name0, name1)
+            if key not in handle:
+                continue
+            matches = handle[key]["matches0"][()]
+            valid = matches != -1
+            count = int(valid.sum())
+            if count < 8 or name0 not in f0 or name1 not in f1:
+                out.append((count, float("nan")))
+                continue
+            kp0 = f0[name0]["keypoints"][()]
+            kp1 = f1[name1]["keypoints"][()]
+            shift = np.linalg.norm(kp0[valid] - kp1[matches[valid]], axis=1)
+            out.append((count, float(np.median(shift))))
+    return out
 
 
 def _match_counts(path: Path, pairs: list[tuple[str, str]]) -> list[int]:

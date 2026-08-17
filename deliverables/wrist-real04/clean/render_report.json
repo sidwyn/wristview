@@ -1,0 +1,38 @@
+[
+  {
+    "clip": "demo_0",
+    "frames": 426,
+    "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist-real04/clean/demo_0.mp4",
+    "coverage_mean": 0.5145,
+    "coverage_min": 0.1755,
+    "hand_tracked_fraction": 0.716,
+    "gripper_closed_frames": 46,
+    "grasp_onset_frame": null,
+    "object_points": 0,
+    "frames_object_carried": 0
+  },
+  {
+    "clip": "demo_1",
+    "frames": 252,
+    "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist-real04/clean/demo_1.mp4",
+    "coverage_mean": 0.5074,
+    "coverage_min": 0.1323,
+    "hand_tracked_fraction": 0.7421,
+    "gripper_closed_frames": 4,
+    "grasp_onset_frame": null,
+    "object_points": 0,
+    "frames_object_carried": 0
+  },
+  {
+    "clip": "demo_3",
+    "frames": 234,
+    "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist-real04/clean/demo_3.mp4",
+    "coverage_mean": 0.4967,
+    "coverage_min": 0.1415,
+    "hand_tracked_fraction": 0.8077,
+    "gripper_closed_frames": 0,
+    "grasp_onset_frame": null,
+    "object_points": 0,
+    "frames_object_carried": 0
+  }
+]

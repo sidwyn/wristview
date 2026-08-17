@@ -121,10 +121,13 @@ def train_splat(
     config: dict,
     device: str,
     progress_dir: Path | None = None,
+    probe=None,
 ) -> tuple[GaussianModel, dict]:
     """Fit a Gaussian splat to the posed images. Returns the model and metrics."""
     if not cameras:
         raise ValueError("no training cameras; Stage 1 cannot train a splat")
+
+    empty_cache_interval = int(config.get("empty_cache_interval", 50))
 
     rng = np.random.default_rng(0)
     init_points = int(config.get("init_points", 60000))
@@ -248,6 +251,24 @@ def train_splat(
                 "  step %5d  loss %.4f  psnr %.2f dB  gaussians %d  (%.0fs)",
                 step, float(loss), quality, model.count, time.perf_counter() - started,
             )
+
+        # Hand freed blocks back to Metal. The MPS caching allocator keeps
+        # every block it has ever used, so driver memory climbs even when the
+        # model does not. Measured over 500 steps at a near-constant 60,000
+        # Gaussians: allocated held at 1.02 GiB while driver went 3.59 to 6.34
+        # GiB and was still rising. Extrapolated to 3,000 steps that is about
+        # 20 GiB, which is the out-of-memory this run hit. Emptying every 50
+        # steps holds driver at 3.5 GiB for the same work.
+        if empty_cache_interval and step % empty_cache_interval == 0:
+            if device == "mps":
+                torch.mps.empty_cache()
+            elif device == "cuda":
+                torch.cuda.empty_cache()
+
+        # An external observer, used by tools/allocator_curve.py to record
+        # allocator memory. The trainer stays unaware of what is measured.
+        if probe is not None:
+            probe(step, model.count)
 
         if progress_dir is not None and step % max(iterations // 4, 1) == 0:
             _dump_preview(model, cameras[0], progress_dir / f"train_{step:05d}.png",

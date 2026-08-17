@@ -175,6 +175,11 @@ def _estimate_episode(
     hand_px = np.zeros((count, hand_backend.NUM_LANDMARKS, 2))
     hand_valid = np.zeros(count, dtype=bool)
     hand_confidence = np.zeros(count)
+    # Which hand was picked, per frame. The selector takes the largest box, and
+    # with two hands in shot the nearer one is larger, so the selection can
+    # cross from one hand to the other mid-episode without anything failing.
+    # The trajectory that comes out is smooth and wrong.
+    hand_side = np.full(count, "", dtype=object)
 
     hand_kind = models["hand_kind"]
     groundtruth_hands = None
@@ -207,6 +212,7 @@ def _estimate_episode(
         hand_world[index] = transform_points(camera_poses[index], frame.landmarks_cam)
         hand_valid[index] = True
         hand_confidence[index] = frame.confidence
+        hand_side[index] = frame.handedness
 
     with rec.timed(f"hand.{clip_id}"):
         if groundtruth_hands is not None:
@@ -246,6 +252,26 @@ def _estimate_episode(
 
     canonical: np.ndarray | None = None
     canonical_centroid = np.zeros(3)
+
+    # The work surface, from Stage 1, and the object's measured height. Both
+    # are needed to place a resting object without a depth estimate.
+    from .. import plane as plane_module
+
+    desk_normal = desk_offset = None
+    scene_meta = read_json(ctx.stage_dir(1, create=False) / "scale.json")
+    plane_meta = (scene_meta.get("diagnostics") or {}).get("desk_plane")
+    if plane_meta and plane_meta.get("offset_m") is not None:
+        desk_normal = np.asarray(plane_meta["normal"], dtype=np.float64)
+        desk_offset = float(plane_meta["offset_m"])
+        log.info("%s: desk plane from Stage 1, offset %.4f m, normal %s",
+                 clip_id, desk_offset, np.round(desk_normal, 4).tolist())
+    object_height_m = float(pose_cfg.get("object_height_m", 0.0))
+    if desk_normal is not None and object_height_m <= 0:
+        log.warning(
+            "%s: a desk plane exists but retarget.object_height_m is unset, so the "
+            "depth path is used instead. Measure the object and set it.", clip_id,
+        )
+    object_source = np.full(count, "", dtype=object)
     target_pose = np.eye(4)
     previous_gray: np.ndarray | None = None
     previous_mask: np.ndarray | None = None
@@ -322,7 +348,31 @@ def _estimate_episode(
             mask_areas[index] = int(mask.sum())
             cv2.imwrite(str(masks_dir / f"{index:05d}.png"), (mask * 255).astype(np.uint8))
 
-            # --- metric depth ---
+            # --- pose on the desk plane, no depth anywhere ---
+            #
+            # Preferred whenever Stage 1 fitted a plane and the object's real
+            # height is known. The depth path below stays only as a fallback,
+            # because it is what put session 4's cube 85 mm into the air while
+            # reporting a 1.1 mm residual.
+            if desk_normal is not None and object_height_m > 0:
+                solved = plane_module.object_pose_on_plane(
+                    mask, camera_poses[index], work_intrinsics,
+                    desk_normal, desk_offset, object_height_m,
+                    reference_rotation=(target_pose[:3, :3] if target_pose is not None else None),
+                )
+                if solved is not None:
+                    pose, plane_report = solved
+                    object_poses[index] = pose
+                    object_valid[index] = True
+                    object_rmse[index] = 0.0
+                    object_source[index] = "plane"
+                    target_pose = pose
+                    if canonical is None:
+                        canonical_centroid = pose[:3, 3]
+                        canonical = np.zeros((1, 3))
+                    continue
+
+            # --- metric depth (fallback) ---
             metric = None
             if splat is not None:
                 reference, reference_valid = _render_splat_depth(
@@ -382,6 +432,10 @@ def _estimate_episode(
             target_pose = pose
 
     object_rate = float(object_valid.mean())
+    by_plane = int(sum(1 for x in object_source if x == "plane"))
+    if by_plane:
+        log.info("%s: %d of %d object poses solved on the desk plane, no depth used",
+                 clip_id, by_plane, int(object_valid.sum()))
     log.info(
         "%s: object tracked on %d/%d frames (%.0f%%) via %s, median ICP residual %.4f m",
         clip_id, int(object_valid.sum()), count, object_rate * 100, object_kind,
@@ -393,6 +447,21 @@ def _estimate_episode(
         object_poses[object_valid] = smooth_poses(object_poses[object_valid], window)
 
     # ---- write ------------------------------------------------------------
+    # ---- hand identity guard ---------------------------------------------
+    sides = [s for s in hand_side[hand_valid] if s]
+    switches = sum(1 for a, b in zip(sides, sides[1:], strict=False) if a != b)
+    side_counts = {s: sides.count(s) for s in set(sides)}
+    if switches:
+        log.error(
+            "%s: the selected hand changed side %d times (%s). This clip's "
+            "single-hand trajectory is INVALID: the largest-box selector "
+            "crossed between two hands mid-episode, and the result will look "
+            "smooth while describing neither hand.",
+            clip_id, switches, side_counts,
+        )
+    elif sides:
+        log.info("%s: hand identity stable, %s throughout", clip_id, sides[0])
+
     hand_path = out_dir / "hand.npz"
     np.savez_compressed(
         hand_path,
@@ -401,10 +470,13 @@ def _estimate_episode(
         landmarks_px=hand_px,
         valid=hand_valid,
         confidence=hand_confidence,
+        hand_side=np.array([str(s) for s in hand_side]),
+        hand_side_switches=np.array(switches),
     )
     object_pose_path = out_dir / "object_pose.npy"
     np.save(object_pose_path, object_poses)
     np.save(out_dir / "object_valid.npy", object_valid)
+    np.save(out_dir / "object_source.npy", np.array([str(x) for x in object_source]))
 
     canonical_path = None
     if canonical is not None:

@@ -70,12 +70,12 @@ class TestRender:
         assert result.rgb.shape == (240, 320, 3)
         assert result.alpha.shape == (240, 320)
         assert result.depth.shape == (240, 320)
-        assert float(result.rgb.min()) >= 0.0
-        assert float(result.alpha.max()) <= 1.0 + 1e-5
+        assert float(result.rgb.min().detach()) >= 0.0
+        assert float(result.alpha.max().detach()) <= 1.0 + 1e-5
 
     def test_renders_something(self, model):
         result = render(model, identity_view(), 250.0, 250.0, 160.0, 120.0, 320, 240)
-        assert float(result.alpha.mean()) > 0.01
+        assert float(result.alpha.mean().detach()) > 0.01
 
     def test_empty_view_returns_background(self, model):
         # Look the other way: every Gaussian is behind the camera.
@@ -98,7 +98,7 @@ class TestRender:
         result = render(model, identity_view(), 250.0, 250.0, 160.0, 120.0, 320, 240)
         covered = result.alpha > 0.5
         if bool(covered.any()):
-            assert float(result.depth[covered].min()) > 0.0
+            assert float(result.depth[covered].min().detach()) > 0.0
 
     def test_nearer_gaussian_occludes_the_farther_one(self):
         # Two opaque Gaussians on the optical axis. The near one must win.
@@ -110,7 +110,7 @@ class TestRender:
             one.opacity_logit.fill_(6.0)  # effectively opaque
 
         result = render(one, identity_view(), 300.0, 300.0, 64.0, 64.0, 128, 128)
-        centre = result.rgb[64, 64]
+        centre = result.rgb[64, 64].detach()
         assert float(centre[0]) > float(centre[2]), "the near red Gaussian must occlude the far blue one"
 
     def test_is_deterministic(self, model):
@@ -122,7 +122,7 @@ class TestRender:
         a = render(model, identity_view(), 250.0, 250.0, 160.0, 120.0, 320, 240, tile_size=16)
         b = render(model, identity_view(), 250.0, 250.0, 160.0, 120.0, 320, 240, tile_size=8)
         # Tiling is an implementation detail, not a visual parameter.
-        assert float((a.rgb - b.rgb).abs().mean()) < 0.02
+        assert float((a.rgb - b.rgb).abs().mean().detach()) < 0.02
 
     def test_non_multiple_resolution_is_cropped_correctly(self, model):
         result = render(model, identity_view(), 250.0, 250.0, 100.0, 75.0, 201, 149, tile_size=16)
@@ -348,7 +348,7 @@ class TestDensityScaling:
         )
         assert result.rgb.shape == (405, 720, 3)
         assert torch.isfinite(result.rgb).all()
-        assert float(result.alpha.mean()) > 0.01
+        assert float(result.alpha.mean().detach()) > 0.01
 
     def test_backward_through_a_dense_splat(self):
         model = self._dense_model(40_000)
@@ -388,7 +388,7 @@ class TestDensityScaling:
         with torch.no_grad():
             model.opacity_logit.fill_(4.0)
         result = render(model, identity_view(), 300.0, 300.0, 64.0, 64.0, 128, 128)
-        centre = result.rgb[64, 64]
+        centre = result.rgb[64, 64].detach()
         assert float(centre[0]) > 0.5
         assert float(centre[2]) < 0.1
 

@@ -305,7 +305,9 @@ def command_preflight(args: argparse.Namespace) -> int:
         print(f"FAIL  could not measure: {exc}")
         return 1
 
-    print(f"scan self-match   {result.reference_matches:6.0f} features   (the ceiling this footage supports)")
+    print(f"scan self-match   {result.reference_matches:6.0f} features   "
+          f"(ceiling at a matched baseline of {result.baseline_px:.0f} px, "
+          f"{result.reference_pairs_used} pairs)")
     print(f"demo to scan      {result.demo_matches:6.0f} features   (best scan frame, median over {result.demo_frames} demo frames)")
     print(f"ratio             {result.ratio:6.2f}              (pass needs {PASS_RATIO:.2f})")
     print()

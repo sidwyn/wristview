@@ -114,6 +114,7 @@ def _fit_aruco_scale(
     marker_length_m: float,
     marker_id: int | None = None,
     min_detections: int = 10,
+    scene_points: np.ndarray | None = None,
 ) -> tuple[float, np.ndarray, dict] | None:
     """Recover scale from a printed marker of known size.
 
@@ -191,6 +192,8 @@ def _fit_aruco_scale(
 
     matrix = intrinsics.matrix
     lengths: list[float] = []
+    marker_centre = None
+    world_up: np.ndarray | None = None
     for marker_id_seen, views in observations.items():
         if marker_id_seen != chosen or len(views) < 2:
             continue
@@ -211,15 +214,65 @@ def _fit_aruco_scale(
             np.linalg.norm(corners3d[i] - corners3d[(i + 1) % 4]) for i in range(4)
         ]
         lengths.append(float(np.mean(sides)))
+
+        # The marker lies flat on the work surface, so its normal is the
+        # surface normal. That is the only source of "up" in this pipeline:
+        # COLMAP's world orientation is arbitrary, and ArUco scaling only
+        # scales, so nothing else knows which way the desk faces.
+        normal = np.cross(corners3d[1] - corners3d[0], corners3d[3] - corners3d[0])
+        norm = np.linalg.norm(normal)
+        # Kept for the close-range coverage check, which needs somewhere to
+        # measure "the working area" from. The marker sits beside the object
+        # by procedure, so it stands in for it.
+        marker_centre = np.mean(corners3d, axis=0)
+        if norm > 1e-9:
+            normal = normal / norm
+            # Point it toward the cameras, which are above the desk.
+            centre = marker_centre
+            votes = sum(
+                1 for _, pose in views[:20]
+                if float(np.dot(normal, pose[:3, 3] - centre)) > 0
+            )
+            if votes < len(views[:20]) / 2:
+                normal = -normal
+            world_up = normal
         log.info("marker %d: mean side %.5f in COLMAP units", marker_id_seen, lengths[-1])
 
     if not lengths:
         return None
 
+    # Fit the surface the marker is lying on, in the same units the marker is
+    # about to scale. Done before the transform so the caller can scale it.
+    desk_plane = None
+    if world_up is not None and scene_points is not None and len(scene_points) >= 16:
+        try:
+            from ..plane import fit_plane
+
+            normal, offset, plane_report = fit_plane(scene_points, world_up)
+            desk_plane = {
+                "normal": [round(float(v), 6) for v in normal],
+                "offset_colmap_units": round(float(offset), 6),
+                "report": plane_report,
+            }
+            log.info(
+                "desk plane: %d of %d points within 6 mm, median residual %.2f mm, "
+                "%.1f deg from the marker normal",
+                plane_report["inliers"], plane_report["points"],
+                plane_report["residual_median_mm"], plane_report["angle_to_hint_deg"],
+            )
+        except ValueError as exc:
+            log.warning("could not fit a desk plane: %s", exc)
+
     measured = float(np.median(lengths))
     if measured < 1e-9:
         return None
     scale = marker_length_m / measured
+
+    # The plane was fitted before scaling. A pure scaling leaves the normal
+    # alone and multiplies the offset, so record the metric value here rather
+    # than leaving every caller to remember the conversion.
+    if desk_plane is not None:
+        desk_plane["offset_m"] = round(desk_plane["offset_colmap_units"] * scale, 6)
 
     transform = sim3_matrix(scale, np.eye(3), np.zeros(3))
     diagnostics = {
@@ -230,6 +283,16 @@ def _fit_aruco_scale(
         "ids_ignored": rejected,
         "measured_side_colmap_units": measured,
         "known_side_m": marker_length_m,
+        # In metres: the corners were triangulated before scaling.
+        "marker_world_position": (
+            [round(float(v) * scale, 5) for v in marker_centre]
+            if marker_centre is not None else None
+        ),
+        "world_up": world_up.round(6).tolist() if world_up is not None else None,
+        # The work surface itself. Fitted once per session, because it does not
+        # move, and used by Stage 3 to place a resting object without any
+        # depth estimate. See src/wristview/plane.py.
+        "desk_plane": desk_plane,
         "note": "Scale only. ArUco fixes size but not the world orientation or origin.",
     }
     log.info("ArUco scale: %.5f from %d markers", scale, len(lengths))
@@ -573,6 +636,27 @@ def run(ctx: RunContext) -> dict:
         rec.metric("sparse_points", int(reconstruction.num_points3D()))
         rec.metric("mean_reprojection_error_px", round(mean_reproj, 4))
 
+        # Both reconstruction gates, evaluated together and recorded. The
+        # reprojection threshold existed in the config for the whole project
+        # and was never read here, so it never rejected anything.
+        from ..qc import reconstruction_gates
+
+        for gate in reconstruction_gates(
+            rec.metrics,
+            float(cfg.get("min_registration_rate", 0.8)),
+            float(cfg.get("max_reproj_error_px", 1.5)),
+        ):
+            rec.metric(f"gate_{gate.name}", {
+                "passed": gate.passed, "value": gate.value,
+                "threshold": gate.threshold, "unit": gate.unit,
+            })
+            if not gate.passed:
+                log.error("GATE FAILED %s: %s %s against a limit of %s. %s",
+                          gate.name, gate.value, gate.unit, gate.threshold,
+                          gate.evidence)
+                rec.note(f"gate {gate.name} failed: {gate.value} {gate.unit} "
+                         f"against {gate.threshold}")
+
         min_rate = float(cfg.get("min_registration_rate", 0.8))
         if registration_rate < min_rate:
             message = (
@@ -585,6 +669,11 @@ def run(ctx: RunContext) -> dict:
             raise RuntimeError(message)
 
         # ---- metric scale -------------------------------------------------
+        # The sparse cloud, in COLMAP units, for the desk-plane fit below.
+        sparse_xyz = np.array(
+            [p.xyz for p in reconstruction.points3D.values()], dtype=np.float64
+        )
+
         scale_cfg = cfg.get("scale", {})
         source = scale_cfg.get("source", "auto")
         scale_result = None
@@ -607,6 +696,7 @@ def run(ctx: RunContext) -> dict:
                     float(scale_cfg.get("aruco_marker_length_m", 0.15)),
                     marker_id=scale_cfg.get("aruco_marker_id"),
                     min_detections=int(scale_cfg.get("aruco_min_detections", 10)),
+                    scene_points=sparse_xyz,
                 )
 
         if scale_result is None and source in ("auto", "known_object"):

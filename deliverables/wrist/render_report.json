@@ -3,45 +3,60 @@
     "clip": "demo_0",
     "frames": 205,
     "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist/demo_0.mp4",
-    "coverage_mean": 0.724,
-    "coverage_min": 0.1765,
-    "hand_tracked_fraction": 0.6,
-    "gripper_closed_frames": 0
+    "coverage_mean": 0.5974,
+    "coverage_min": 0.0664,
+    "hand_tracked_fraction": 0.5805,
+    "gripper_closed_frames": 115,
+    "grasp_onset_frame": 83,
+    "object_points": 61175,
+    "frames_object_carried": 115
   },
   {
     "clip": "demo_1",
     "frames": 173,
     "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist/demo_1.mp4",
-    "coverage_mean": 0.5702,
-    "coverage_min": 0.2022,
-    "hand_tracked_fraction": 0.9249,
-    "gripper_closed_frames": 0
+    "coverage_mean": 0.5151,
+    "coverage_min": 0.2359,
+    "hand_tracked_fraction": 0.9075,
+    "gripper_closed_frames": 85,
+    "grasp_onset_frame": 39,
+    "object_points": 61175,
+    "frames_object_carried": 85
   },
   {
     "clip": "demo_2",
     "frames": 139,
     "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist/demo_2.mp4",
-    "coverage_mean": 0.5934,
-    "coverage_min": 0.2806,
-    "hand_tracked_fraction": 0.5252,
-    "gripper_closed_frames": 0
+    "coverage_mean": 0.4631,
+    "coverage_min": 0.2,
+    "hand_tracked_fraction": 0.5108,
+    "gripper_closed_frames": 97,
+    "grasp_onset_frame": 8,
+    "object_points": 61175,
+    "frames_object_carried": 97
   },
   {
     "clip": "demo_3",
     "frames": 180,
     "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist/demo_3.mp4",
-    "coverage_mean": 0.5083,
-    "coverage_min": 0.1783,
-    "hand_tracked_fraction": 0.8,
-    "gripper_closed_frames": 0
+    "coverage_mean": 0.4397,
+    "coverage_min": 0.1392,
+    "hand_tracked_fraction": 0.7833,
+    "gripper_closed_frames": 108,
+    "grasp_onset_frame": 7,
+    "object_points": 61175,
+    "frames_object_carried": 108
   },
   {
     "clip": "demo_4",
     "frames": 180,
     "video": "/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/deliverables/wrist/demo_4.mp4",
-    "coverage_mean": 0.6775,
-    "coverage_min": 0.2622,
-    "hand_tracked_fraction": 0.6,
-    "gripper_closed_frames": 0
+    "coverage_mean": 0.6551,
+    "coverage_min": 0.3759,
+    "hand_tracked_fraction": 0.5833,
+    "gripper_closed_frames": 117,
+    "grasp_onset_frame": 59,
+    "object_points": 61175,
+    "frames_object_carried": 117
   }
 ]

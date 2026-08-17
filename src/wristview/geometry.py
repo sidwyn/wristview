@@ -246,3 +246,112 @@ def frame_from_axes(
     y_axis = np.cross(z_axis, x_axis)
 
     return make_pose(np.stack([x_axis, y_axis, z_axis], axis=1), origin)
+
+
+def canonicalise_roll(
+    poses: np.ndarray,
+    world_up: np.ndarray,
+    up_axis_in_frame: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Resolve the 180 degree roll ambiguity of a symmetric parallel gripper.
+
+    A parallel jaw is symmetric about its approach axis: rotating the gripper
+    180 degrees about z swaps which jaw is which and describes the same
+    physical grasp. The roll here comes from the thumb-to-index axis, so it
+    flips sign whenever the hand crosses over, and a wrist camera bolted to
+    that frame turns upside down mid-episode.
+
+    Two passes, and the order matters for a reason worth writing down.
+
+    continuous  sweep forward and take whichever of the two orientations sits
+                closer to the previous frame in rotation. This chains every
+                frame to its neighbour and leaves exactly one unknown: the
+                sign of the chain as a whole.
+    canonical   resolve that one remaining sign for the whole clip at once, by
+                majority vote of the frames' up axes against world up.
+
+    Applying canonical per frame first, as the obvious reading suggests, does
+    not work. Where the gripper is near vertical the two orientations are
+    almost equally aligned with world up, so the per-frame test is decided by
+    noise, and two canonically correct neighbours can still be 180 degrees
+    apart. Measured on the five demo clips, per-frame canonical alone left 1 to
+    9 abrupt flips, and letting continuity run after it re-inverted 2 to 12
+    frames that canonical had just fixed. Continuity first makes flips
+    impossible by construction, and the global vote still gets the clip
+    upright.
+
+    The cost is that a clip where the hand genuinely turns over keeps
+    following the hand instead of snapping upright. That is the correct
+    trade: a real rotation is real, and a flip mid-episode is a defect.
+
+    `world_up` has to come from the scene, not from a convention: COLMAP's
+    world orientation is arbitrary. Stage 1 takes it from the plane of the
+    ArUco marker, which lies flat on the work surface.
+
+    Returns the corrected poses and a report, including the number of flips
+    that remain.
+    """
+    poses = np.asarray(poses, dtype=np.float64).copy()
+    if len(poses) == 0:
+        return poses, {"flips_before": 0, "flips_after": 0, "median_up_angle_deg": None}
+
+    world_up = np.asarray(world_up, dtype=np.float64).reshape(3)
+    world_up = world_up / max(np.linalg.norm(world_up), 1e-12)
+    # The camera's up in the gripper frame. The wrist mount sits along -y, so
+    # -y is what should point skyward.
+    local_up = (
+        np.array([0.0, -1.0, 0.0]) if up_axis_in_frame is None
+        else np.asarray(up_axis_in_frame, dtype=np.float64).reshape(3)
+    )
+
+    def up_alignment(pose: np.ndarray) -> float:
+        return float(np.dot(pose[:3, :3] @ local_up, world_up))
+
+    def flip(pose: np.ndarray) -> np.ndarray:
+        """Rotate 180 degrees about the approach axis. Same grasp, other roll."""
+        turned = pose.copy()
+        turned[:3, 0] = -pose[:3, 0]
+        turned[:3, 1] = -pose[:3, 1]
+        return turned
+
+    flips_before = _count_roll_flips(poses, local_up)
+
+    # Pass one: continuity. Compare the whole rotation, not just the up axis.
+    # Between frames at capture rate the hand barely moves, so of the two
+    # candidates the nearer one is always the right one.
+    for index in range(1, len(poses)):
+        previous = poses[index - 1][:3, :3]
+        keep = np.linalg.norm(poses[index][:3, :3] - previous)
+        turned = flip(poses[index])
+        if np.linalg.norm(turned[:3, :3] - previous) < keep:
+            poses[index] = turned
+
+    # Pass two: one sign for the whole clip. Vote by alignment rather than by
+    # frame count, so confidently upright frames outweigh near-vertical ones
+    # that have no real opinion.
+    vote = float(np.sum([up_alignment(pose) for pose in poses]))
+    if vote < 0:
+        for index in range(len(poses)):
+            poses[index] = flip(poses[index])
+
+    flips_after = _count_roll_flips(poses, local_up)
+    angles = np.degrees(
+        np.arccos(
+            np.clip([np.dot(p[:3, :3] @ local_up, world_up) for p in poses], -1.0, 1.0)
+        )
+    )
+    return poses, {
+        "flips_before": int(flips_before),
+        "flips_after": int(flips_after),
+        "median_up_angle_deg": round(float(np.median(angles)), 2),
+        "max_up_angle_deg": round(float(angles.max()), 2),
+        "frames_up_inverted": int((angles > 90).sum()),
+    }
+
+
+def _count_roll_flips(poses: np.ndarray, local_up: np.ndarray) -> int:
+    """Consecutive frames whose up axes point into opposite hemispheres."""
+    if len(poses) < 2:
+        return 0
+    ups = np.array([p[:3, :3] @ local_up for p in poses])
+    return int((np.einsum("ij,ij->i", ups[1:], ups[:-1]) < 0).sum())

@@ -96,6 +96,40 @@ of frames registered while doing it.
 **Close-pass fraction by session:** 0 percent failed, 37 percent was marginal,
 60 percent passed comfortably. Aim for 60 percent.
 
+### Phase 3 · contact pass, about 6 seconds
+
+Hold the camera **10 to 15 cm from the work surface** and sweep the small area
+where the grasp happens. Hands out of shot. This is closer than feels sensible.
+
+**Why.** The virtual wrist camera renders from 0.10 m. Every session so far was
+scanned from 0.5 m and further, so every wrist frame is an extrapolation rather
+than an interpolation, and the render is soft at exactly the moment that matters,
+contact. Training longer does not fix it, and neither does a better splat: the
+1.53 M Gaussian splat reaches 35.2 dB on the training views and is still soft at
+0.10 m, because no training view was ever there. This is the one defect in the
+current renders that only a capture change can fix.
+
+### Do not clear the set until the pipeline has passed end to end
+
+Leave the objects, the marker and the lighting exactly as shot until Stage 5
+has produced a render you accept. Not until the scan finishes, and not until
+Stage 1 finishes.
+
+**Why.** A scan can only be extended while the set still exists. Session 4's
+close passes came out at a median 0.264 m from the surface when they were
+intended to be 0.15 m, and only 2 frames of 364 got inside 0.15 m. That is
+fixable by appending a 30-second pass at true wrist range, and it is fixable
+for about a minute of shooting. The set was cleared before Stage 1 finished,
+so the option was gone before the measurement that would have called for it
+existed.
+
+Nothing warns you. The scan reconstructs, every clip localizes, the gates
+pass, and the defect only appears as softness in the final render, by which
+time re-shooting means re-staging the whole session.
+
+This is a process defect, not a code one, which is exactly why it belongs
+here.
+
 ---
 
 ## 4. The ArUco marker
@@ -144,6 +178,23 @@ id appears in the log, either remove it from the scene or pin
   1's C006 clipped the glass at the left edge, which leaves hand pose intact
   but corrupts object pose.
 - **Keep the marker in frame.**
+- **Keep the hand in shot until two seconds after the release, then stop
+  recording.** Do not let the hand leave the frame while the clip runs on.
+  When hand tracking stops, the pipeline holds the last measured pose, so the
+  gripper freezes and the wrist camera stares at whatever it last saw. Session
+  3's demo_2 ends with 59 frozen frames, 42 per cent of the clip, and demo_3
+  with 33. Nothing reports an error, because a held pose is a valid pose.
+- **Move your hands slowly. Demo blur is now the limiting defect, not scan
+  blur.** Session 6 fixed the scan by slowing the close passes: frames dropped
+  for blur fell from 55 to 3. The demos then became the problem, dropping
+  **15 per cent** of frames each, capped down from 19 to 22 per cent. The hands
+  move fast even when the head is still, and the head mount does nothing about
+  that. This is a shooting instruction, not something code can fix: a blurred
+  frame has no features to match, whatever is done with it afterwards.
+- **Move at a normal working pace.** A wrist cannot turn faster than about 900
+  deg/s, and Stage 4 rejects any frame that claims it did. Isolated frames are
+  filled from their neighbours, but two in a row, or more than 5 per cent of
+  the episode, rejects the whole clip.
 - One hand in shot unless the task genuinely needs two. A second hand adjusting
   the scene is picked up by the detector.
 - Say the instruction aloud at the start. It becomes the language label.
@@ -219,3 +270,15 @@ stage reads the frame list from `manifest.json` rather than globbing the
 directory, but any hand-written analysis that globs will silently count the
 duplicates, and one such duplication produced a `KeyError` deep inside a
 matcher, sixteen minutes into a run, with nothing pointing at the cause.
+
+**It also locks the COLMAP database.** A fixture run inside `~/Documents` died
+at Stage 1 after 842 seconds with `SQLite error: database is locked`, having
+completed all 4,826 matches first. The sync daemon had the `.db` open. The same
+run outside the synced tree succeeds. Point `--out` somewhere local:
+
+```
+python -m wristview.cli run --scan ... --out /tmp/wristview-runs
+```
+
+This costs a full matching pass every time it is forgotten, and the error names
+SQLite rather than iCloud, so it does not look like a storage problem.

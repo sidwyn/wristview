@@ -66,6 +66,36 @@ rsync -avz user@box:~/result/ ./result/
 `--render-only` skips training and renders from an existing `splat.pt`, which
 is what to use when iterating on the wrist camera offset.
 
+## Check the Gaussian count before letting it run for an hour
+
+The first 30,000 step run held at **exactly 13,667 Gaussians**, the COLMAP seed
+count, for every step. PSNR reached 28 dB and was flat from step 2,000, so about
+28,000 steps did nothing. There was no densification strategy in the trainer at
+all, and nothing failed.
+
+The trainer now raises at step 2,000 if the count has not grown, so this cannot
+repeat silently. **Confirm it cheaply first:**
+
+```bash
+python train_gsplat.py --data ~/wristview-export --out /tmp/probe --iterations 2500
+```
+
+Growth should appear by about step 600, since `refine_start_iter` is 500 and
+`refine_every` is 100. Expect a line reading
+`densification confirmed: 13667 -> N Gaussians by step 2000`. If it raises
+instead, do not start the long run.
+
+Expect a few hundred thousand to about 2 M Gaussians by the end, so use the
+1 M and 2 M rows in the memory table above rather than the seed count. If the
+card runs out, lower `--resolution` before touching the strategy.
+
+**What the count being stuck cost, measured on the returned `splat.pt`:** 9.8%
+of the Gaussians finished below the 0.005 opacity that pruning removes, and 5.0%
+were wider than a tenth of the scene. 20 of them were wider than the whole
+0.59 m scene, the largest 31.3 m across. Together 14.6% of the splat was dead or
+degenerate. Growth is the visible half of adaptive density control; pruning is
+the half that keeps floaters out of the wrist camera's near plane.
+
 ## What comes back
 
 ```

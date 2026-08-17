@@ -28,8 +28,16 @@ import numpy as np
 
 from ..backends import gripper as gripper_backend
 from ..backends import hands as hand_backend
-from ..geometry import frame_from_axes, orthonormalize, slerp_fill, smooth_poses
+from ..geometry import (
+    canonicalise_roll,
+    frame_from_axes,
+    orthonormalize,
+    slerp_fill,
+    smooth_poses,
+)
+from ..grasp import detect_grasp_by_contact
 from ..logging_setup import get
+from ..qc import hand_velocity_gates, hand_velocity_outliers
 from ..runctx import RunContext, StageRecorder, read_json, write_json
 
 log = get(__name__)
@@ -92,6 +100,14 @@ def detect_grasp(
         if not valid[index]:
             continue
         widths[index] = hand_backend.grasp_width(landmarks[index])
+        # Fingertips close to the object surface. Computed here, per frame,
+        # and not inside the threshold block below: an earlier edit folded it
+        # in there, where it ran once against a stale loop index.
+        if object_valid[index]:
+            distance = np.linalg.norm(
+                hand_backend.grasp_center(landmarks[index]) - object_positions[index]
+            )
+            contact[index] = distance < contact_distance
 
     # Fixed thresholds in metres only suit one object size. A wrapped grasp on
     # a drinking glass holds the thumb and index about 5.8 cm apart, while a
@@ -109,11 +125,6 @@ def detect_grasp(
             close_distance = float(low + 0.35 * (high - low))
             open_distance = float(low + 0.65 * (high - low))
             threshold_source = "auto_percentile"
-        if object_valid[index]:
-            distance = np.linalg.norm(
-                hand_backend.grasp_center(landmarks[index]) - object_positions[index]
-            )
-            contact[index] = distance < contact_distance
 
     # Motion coupling: is the object travelling with the hand.
     coupled = np.zeros(count, dtype=bool)
@@ -152,11 +163,20 @@ def detect_grasp(
             state = True
         fingers_closed[index] = state
 
-    holding = fingers_closed & (contact | coupled)
-
-    # Carrying the object counts as holding even if the fingers read wide,
-    # which happens when a fingertip is occluded and its landmark drifts.
-    holding = holding | (coupled & contact)
+    # Contact and motion coupling both need an object position. When object
+    # tracking is unavailable the two signals are vacuously false, and
+    # requiring them reports no grasp at all on a clip that plainly contains
+    # one. Fall back to finger distance, and record that it happened: finger
+    # distance alone fires on any pinch in mid-air, so a fallback episode is
+    # weaker evidence than a confirmed one.
+    object_available = bool(object_valid.any())
+    if object_available:
+        holding = fingers_closed & (contact | coupled)
+        # Carrying the object counts as holding even if the fingers read wide,
+        # which happens when a fingertip is occluded and its landmark drifts.
+        holding = holding | (coupled & contact)
+    else:
+        holding = fingers_closed
     holding = _hysteresis(holding, int(cfg.get("min_state_frames", 3)))
 
     transitions = np.nonzero(np.diff(holding.astype(int)))[0]
@@ -173,6 +193,8 @@ def detect_grasp(
         ),
         # Recorded so a wrong threshold is visible rather than silent.
         "threshold_source": threshold_source,
+        "signal": "fingers+object" if object_available else "fingers_only",
+        "object_available": object_available,
         "close_distance_m": round(close_distance, 4),
         "open_distance_m": round(open_distance, 4),
         "width_percentiles_m": (
@@ -257,6 +279,7 @@ def _retarget_episode(
     clip: dict,
     spec: gripper_backend.GripperSpec,
     cfg: dict,
+    world_up: np.ndarray | None,
 ) -> dict:
     """Retarget one episode."""
     out_dir = ctx.episode_dir(STAGE, clip_id)
@@ -265,6 +288,27 @@ def _retarget_episode(
     hand = np.load(estimate_dir / "hand.npz")
     landmarks = hand["landmarks_world"]
     hand_valid = hand["valid"]
+
+    # A clip whose selected hand changed side is not a weak episode, it is a
+    # different hand from one moment to the next. Nothing downstream can
+    # recover that, so it is rejected rather than smoothed over.
+    switches = int(hand["hand_side_switches"]) if "hand_side_switches" in hand else 0
+    if switches:
+        sides = [str(x) for x in hand["hand_side"]] if "hand_side" in hand else []
+        seen = {x for x in sides if x}
+        status = {
+            "clip_id": clip_id,
+            "rejected": True,
+            "reject_reason": (
+                f"hand identity changed {switches} times between {sorted(seen)}. "
+                "The largest-box selector crossed between two hands mid-episode, "
+                "so this trajectory describes neither hand."
+            ),
+            "hand_side_switches": switches,
+        }
+        write_json(out_dir / "status.json", status)
+        log.error("%s REJECTED: %s", clip_id, status["reject_reason"])
+        return status
 
     object_poses = np.load(estimate_dir / "object_pose.npy")
     object_valid = np.load(estimate_dir / "object_valid.npy")
@@ -282,21 +326,103 @@ def _retarget_episode(
         log.error("%s REJECTED: no hand detected", clip_id)
         return status
 
-    # ---- grasp ----------------------------------------------------------
-    closed, grasp_diagnostics = detect_grasp(
-        landmarks, hand_valid, object_positions, object_valid, fps, cfg.get("grasp", {})
-    )
+    # ---- hand plausibility ------------------------------------------------
+    # A wrist cannot turn faster than a wrist can turn. Frames that claim it did
+    # are tracking failures, and they have to be found before anything is built
+    # on them.
+    velocity = hand_velocity_outliers(landmarks, hand_valid, fps)
+    velocity_gates = hand_velocity_gates(velocity)
+    outlier = velocity.pop("outlier")
     log.info(
-        "%s: gripper closed on %d/%d frames (%.0f%%), %d transitions, onset frame %s",
-        clip_id, grasp_diagnostics["closed_frames"], len(closed),
-        grasp_diagnostics["closed_fraction"] * 100, grasp_diagnostics["transitions"],
-        grasp_diagnostics["grasp_onset_frame"],
+        "%s: %d of %d tracked frames above %.0f deg/s (%.1f%%), longest run %d, peak %s deg/s",
+        clip_id, velocity["frames_flagged"], velocity["frames_checked"],
+        900.0, velocity["flagged_fraction"] * 100, velocity["longest_run"],
+        velocity["max_rate_deg_s"],
+    )
+    failed = [gate for gate in velocity_gates if not gate.passed]
+    if failed:
+        reason = "; ".join(f"{g.name} {g.value} against {g.threshold} {g.unit}" for g in failed)
+        status = {
+            "clip_id": clip_id,
+            "rejected": True,
+            "reject_reason": f"hand tracking is not physically plausible: {reason}",
+            "hand_velocity": velocity,
+        }
+        write_json(out_dir / "status.json", status)
+        log.error("%s REJECTED: %s", clip_id, reason)
+        return status
+
+    # Isolated bad frames are dropped from the measured set and filled by the
+    # same interpolation that covers a missed detection. Which frames were
+    # filled is recorded, because the export has to distinguish measurement
+    # from fill.
+    hand_measured = hand_valid & ~outlier
+    hand_filled = hand_valid & outlier
+    if outlier.any():
+        log.info(
+            "%s: filling %d flagged frame(s) from neighbours, at %s",
+            clip_id, int(hand_filled.sum()), velocity["flagged_frames"],
+        )
+    hand_valid = hand_measured
+
+    # ---- grasp ----------------------------------------------------------
+    # Contact and carry, not finger separation. The width test scored 57.9 per
+    # cent against ground truth on a handle grasp, because thumb-to-index
+    # distance barely changes when an object is held by its handle.
+    grasp_cfg = cfg.get("grasp", {})
+    method = str(grasp_cfg.get("method", "contact"))
+    if method == "contact":
+        closed, grasp_diagnostics = detect_grasp_by_contact(
+            landmarks, hand_valid, object_positions, object_valid, fps, grasp_cfg
+        )
+        if grasp_diagnostics["signal"] == "unavailable":
+            # Falling back is recorded, never silent: a width-derived grasp is
+            # weaker evidence and the export has to say so.
+            log.warning(
+                "%s: no object position on any frame, so contact could not be "
+                "evaluated. Falling back to finger width, which is the weaker "
+                "signal this replaced.", clip_id,
+            )
+            closed, grasp_diagnostics = detect_grasp(
+                landmarks, hand_valid, object_positions, object_valid, fps, grasp_cfg
+            )
+            grasp_diagnostics["signal"] = "width_fallback"
+            grasp_diagnostics["fallback_reason"] = "no object position on any frame"
+    else:
+        closed, grasp_diagnostics = detect_grasp(
+            landmarks, hand_valid, object_positions, object_valid, fps, grasp_cfg
+        )
+    log.info(
+        "%s: grasp by %s, closed on %d/%d frames (%.0f%%), %d transitions, "
+        "contact frame %s, release frame %s",
+        clip_id, grasp_diagnostics["signal"], grasp_diagnostics["closed_frames"],
+        len(closed), grasp_diagnostics["closed_fraction"] * 100,
+        grasp_diagnostics["transitions"], grasp_diagnostics["grasp_onset_frame"],
+        grasp_diagnostics.get("release_frame"),
     )
 
     # ---- pose mapping -----------------------------------------------------
     poses, widths = gripper_poses_from_hand(
         landmarks, hand_valid, float(cfg.get("origin_offset_m", 0.02))
     )
+
+    # Resolve the gripper's roll ambiguity before anything else touches the
+    # poses. It has to happen here, on the raw per-frame poses: smoothing
+    # averages a flip away into a slow tumble instead of a sharp one, so a
+    # sequence that is half upside down still reads as zero flips afterwards.
+    roll_report = None
+    if world_up is not None:
+        poses[hand_valid], roll_report = canonicalise_roll(poses[hand_valid], world_up)
+        log.info(
+            "%s: roll flips %d -> %d, up axis %.0f deg from world up (%d frames inverted)",
+            clip_id, roll_report["flips_before"], roll_report["flips_after"],
+            roll_report["median_up_angle_deg"], roll_report["frames_up_inverted"],
+        )
+        if roll_report["flips_after"]:
+            log.warning(
+                "%s: %d roll flip(s) remain inside the episode",
+                clip_id, roll_report["flips_after"],
+            )
 
     # Fill the gaps where the hand was not detected, then smooth.
     poses = slerp_fill(poses, hand_valid)
@@ -337,6 +463,11 @@ def _retarget_episode(
         width_video_rate=widths,
         closed_video_rate=closed,
         hand_valid=hand_valid,
+        # Per frame, what the trajectory rests on. `hand_measured` is observed,
+        # `hand_filled` is interpolated across a frame the velocity gate
+        # rejected, and neither means the hand was never detected.
+        hand_measured=hand_measured,
+        hand_filled=hand_filled,
     )
 
     _plot_trajectory(out_dir / "trajectory.png", poses, closed, clip_id)
@@ -345,6 +476,9 @@ def _retarget_episode(
     status = {
         "clip_id": clip_id,
         "rejected": False,
+        "roll": roll_report,
+        "hand_velocity": velocity,
+        "frames_filled_velocity": int(hand_filled.sum()),
         "source_fps": round(fps, 3),
         "control_rate_hz": target_hz,
         "frames_video_rate": len(poses),
@@ -448,6 +582,23 @@ def run(ctx: RunContext) -> dict:
             "estimate_summary": ctx.rel(ctx.stage_dir(3, create=False) / "summary.json")
         }
 
+        # World up comes from the scene, not from a convention: COLMAP's world
+        # orientation is arbitrary. Stage 1 reads it off the marker plane.
+        # A run with no marker has no scale.json at all, so this is a missing
+        # capability rather than an error.
+        scale_path = ctx.stage_dir(1, create=False) / "scale.json"
+        world_up = None
+        if scale_path.exists():
+            world_up = read_json(scale_path).get("diagnostics", {}).get("world_up")
+        if world_up is None:
+            log.warning(
+                "no world_up in Stage 1 scale.json, so the gripper roll cannot be "
+                "canonicalised and the wrist camera may be inverted"
+            )
+        else:
+            world_up = np.asarray(world_up, dtype=np.float64)
+            log.info("world up %s, from the marker plane", np.round(world_up, 4).tolist())
+
         spec = gripper_backend.load(cfg)
         rec.backend("gripper", spec.source)
         log.info(
@@ -465,7 +616,7 @@ def run(ctx: RunContext) -> dict:
             log.info("--- Stage 4: %s ---", clip_id)
             with rec.timed(f"retarget.{clip_id}"):
                 statuses[clip_id] = _retarget_episode(
-                    ctx, rec, clip_id, manifest["clips"][clip_id], spec, cfg
+                    ctx, rec, clip_id, manifest["clips"][clip_id], spec, cfg, world_up
                 )
             if not statuses[clip_id].get("rejected"):
                 rec.output(
@@ -480,6 +631,22 @@ def run(ctx: RunContext) -> dict:
         rec.output("summary", summary_path)
         rec.metric("episodes", len(statuses))
         rec.metric("accepted", sum(1 for s in statuses.values() if not s.get("rejected")))
+        rec.metric(
+            "roll_flips_inside_episode",
+            {
+                k: (v.get("roll") or {}).get("flips_after")
+                for k, v in statuses.items()
+                if not v.get("rejected")
+            },
+        )
+        rec.metric(
+            "median_up_angle_deg",
+            {
+                k: (v.get("roll") or {}).get("median_up_angle_deg")
+                for k, v in statuses.items()
+                if not v.get("rejected")
+            },
+        )
         rec.metric(
             "grasp_closed_fraction",
             {

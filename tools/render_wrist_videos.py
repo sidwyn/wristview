@@ -58,6 +58,7 @@ def render_clip(
     fps: float,
     splat_px: int,
     fisheye: bool,
+    clean: bool = False,
 ) -> dict:
     """Render one clip's side-by-side sequence. Returns a small report."""
     manifest = read_json(run_root / "00_ingest" / "manifest.json")["clips"][clip_id]
@@ -69,6 +70,19 @@ def render_clip(
     widths = traj["width_video_rate"]
     closed = traj["closed_video_rate"]
     hand_valid = traj["hand_valid"]
+
+    # The object, segmented from the scan. It sits where the scan saw it until
+    # the grasp, then it is carried rigidly by the gripper. That is an
+    # assumption, not a measurement: it holds while the grasp is firm and the
+    # object does not slip or rotate in the hand, and it is captioned as such
+    # on every frame so nobody mistakes it for tracking.
+    object_points = object_colors = None
+    grasp_onset = None
+    object_path = run_root / "01_scene" / "object.ply"
+    if object_path.exists():
+        object_points, object_colors = dc.read_ply(object_path)
+        onsets = np.nonzero(closed)[0]
+        grasp_onset = int(onsets[0]) if len(onsets) else None
 
     import yaml
 
@@ -99,6 +113,24 @@ def render_clip(
         coverage[index] = float(np.isfinite(scene_depth).mean())
 
         layers = [(scene_rgb, scene_depth)]
+
+        # ---- the object, static before the grasp and carried after ----
+        object_state = "none"
+        if object_points is not None:
+            if grasp_onset is not None and index >= grasp_onset and closed[index]:
+                carried = ee[index] @ invert_pose(ee[grasp_onset])
+                posed = transform_points(carried, object_points)
+                object_state = "carried"
+            else:
+                posed = object_points
+                object_state = "static"
+            o_rgb, o_depth = mr.rasterize_points_fast(
+                posed, object_colors, view,
+                intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy,
+                PANEL_W, PANEL_H, near=0.02, far=6.0, splat_px=splat_px,
+            )
+            layers.append((o_rgb, o_depth))
+
         boxes = gripper_backend.jaw_boxes(spec, float(widths[index]))
         meshes = [mr.box_mesh(c, h) for c, h in boxes]
         verts, faces = mr.combine(meshes)
@@ -121,15 +153,23 @@ def render_clip(
         source = cv2.imread(str(frames_dir / frame_names[index]))
         left = np.ascontiguousarray(cv2.resize(source, (PANEL_W, PANEL_H)))
 
-        label(left, [("SOURCE  egocentric camera", (255, 255, 255))])
-        label(right, [
-            ("RENDERED  virtual wrist camera", (255, 255, 255)),
-            (f"scene coverage {coverage[index] * 100:.0f}%", (180, 220, 180)),
-            ("hand tracked" if hand_valid[index] else "hand LOST, pose held",
-             (180, 220, 180) if hand_valid[index] else (120, 160, 255)),
-            (f"gripper {'CLOSED' if closed[index] else 'open'} {widths[index] * 100:.1f} cm",
-             (200, 200, 255)),
-        ])
+        if not clean:
+            label(left, [("SOURCE  egocentric camera", (255, 255, 255))])
+        object_caption = {
+            "carried": ("object CARRIED by gripper (rigid, from grasp)", (140, 220, 255)),
+            "static": ("object STATIC at scan position", (180, 180, 180)),
+            "none": ("no object segmented", (140, 140, 140)),
+        }[object_state]
+        if not clean:
+            label(right, [
+                ("RENDERED  virtual wrist camera", (255, 255, 255)),
+                (f"scene coverage {coverage[index] * 100:.0f}%", (180, 220, 180)),
+                ("hand tracked" if hand_valid[index] else "hand LOST, pose held",
+                 (180, 220, 180) if hand_valid[index] else (120, 160, 255)),
+                (f"gripper proxy {'CLOSED' if closed[index] else 'open'} "
+                 f"{widths[index] * 100:.1f} cm", (200, 200, 255)),
+                object_caption,
+            ])
 
         pair = np.hstack([left, np.full((PANEL_H, 4, 3), 40, np.uint8), right])
         cv2.imwrite(str(seq_dir / f"{index:05d}.png"), pair)
@@ -146,6 +186,12 @@ def render_clip(
         "coverage_min": round(float(coverage.min()), 4),
         "hand_tracked_fraction": round(float(hand_valid[:count].mean()), 4),
         "gripper_closed_frames": int(closed[:count].sum()),
+        "grasp_onset_frame": grasp_onset,
+        "object_points": int(len(object_points)) if object_points is not None else 0,
+        "frames_object_carried": int(sum(
+            1 for i in range(count)
+            if grasp_onset is not None and i >= grasp_onset and closed[i]
+        )),
     }
 
 
@@ -158,6 +204,9 @@ def main() -> int:
     parser.add_argument("--splat-px", type=int, default=1)
     parser.add_argument("--fisheye", action="store_true")
     parser.add_argument("--clips", nargs="*", default=None)
+    parser.add_argument("--clean", action="store_true",
+                        help="no captions and no overlay: source on the left, wrist view "
+                             "on the right, nothing else. This is the website asset.")
     args = parser.parse_args()
 
     setup(None, verbose=False)
@@ -178,7 +227,7 @@ def main() -> int:
         log.info("rendering %s", clip_id)
         reports.append(
             render_clip(run_root, clip_id, points, colors, out_dir,
-                        args.fps, args.splat_px, args.fisheye)
+                        args.fps, args.splat_px, args.fisheye, clean=args.clean)
         )
 
     (out_dir / "render_report.json").write_text(json.dumps(reports, indent=2))

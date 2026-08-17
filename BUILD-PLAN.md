@@ -22,6 +22,314 @@
 
 **Caveat on A3:** the test object was a transparent glass, so fingers stayed partly visible through it. Occlusion was partial. An opaque object is the harder case and is untested.
 
+### Defects, and how each was caught
+
+Every row below shares one property: **plausible output, no crash, caught only
+by looking.**
+None of them raised an error.
+Each produced a result that looked reasonable until it was measured against
+something independent.
+This is the dominant failure mode in this pipeline, and it is why the QC gates
+in `src/wristview/qc.py` exist and why each one records its evidence.
+
+| # | Defect | What it looked like | What exposed it |
+|---|---|---|---|
+| 1 | hloc stores descriptors (D, N), LightGlue wants (N, D) | matching ran and returned matches | match counts far below the expected range |
+| 2 | splat tile clamp anchored to the Gaussian's corner | near geometry vanished behind far geometry | reading it as "splatting is hard at close range" until the clamp was inspected |
+| 3 | densification never fired, gradient in pixels against an NDC threshold | training ran, loss fell | Gaussian count never grew, `+0 cloned, +0 split` |
+| 4 | whole (pixels, slots) tensor retained for backward | trained, then ran out of memory | memory scaled with density, not with scene |
+| 5 | compositing chunk of 1024 tiles meant early exit never fired | correct images, high memory | 30k to 120k Gaussians moved 1.4 to 1.5 GiB only after the chunk dropped to 64 |
+| 6 | absolute densification threshold | worked at 0.30 m scene scale | selected nothing at 2.57 m; replaced by a percentile |
+| 7 | opacity reset disabled by my own earlier fix | no floater culling | floaters 2 cm from the camera pinned depth at the near plane |
+| 8 | Stage 1 wrote the untransformed reconstruction | poses looked ordinary | error was a constant 2.5 m and 147 degrees |
+| 9 | ARKit matched to COLMAP by index | scale fitted, RMSE 0.1235 m | matching on timestamp gave 0.0007 m |
+| 10 | pycolmap mixes properties and methods | ran for 26 minutes first | `cam_from_world` read as a property yields a bound method |
+| 11 | **gripper roll taken from the hand, so the wrist camera flipped** | **videos rendered, geometry correct, camera upside down** | **median angle from world up was 73 to 161 degrees on five clips, four of them past 90** |
+| 12 | **hand pose jumped 124 degrees in one frame and held** | **a plausible fast reach** | **2400 deg/s against a human limit near 900** |
+| 13 | **the gsplat trainer never densified** | **30,000 steps, loss fell, PSNR 28 dB** | **Gaussian count sat at exactly the 13,667 seed for every step** |
+| 14 | radial distortion ignored by the rasteriser | a splat that trained fine | error grew from 31.8 dB at the image centre to 29.0 dB at the edge |
+| 15 | position learning rate never decayed | loss fell, looked converged | training PSNR capped near 30 dB with 705 k Gaussians |
+| 16 | MPS allocator memory read as a densification leak | an out-of-memory blamed on model growth | allocated held at 1.02 GiB while driver climbed 3.59 to 6.34 GiB |
+| 17 | **`max_reproj_error_px` was never read by any code** | **a configured gate that looked like a guarantee** | **Stage 1 reported `ok` at 1.5169 px against its own 1.5 limit** |
+| 18 | **pre-flight ceiling normalised by time, not baseline** | **session 4 scored a better ratio than session 3** | **its absolute match count was half session 3's, 214 against 436** |
+| 19 | **the marker reference discarded its own valid mask** | **a plausible marker world pose, used by every marker check ever run** | **bootstrapping over random halves of the detections gave exactly zero spread** |
+
+Also caught the same way, outside the numbered set: two ArUco markers averaged
+into one scale (46% error from a spurious 8-frame detection), Stage 1 re-scaling
+its own cached output, and the marker check using the Stage 0 prior focal length
+of 1836 instead of the solved 2819, which produced an identical 21 cm error on
+five independent clips.
+Constancy across independent inputs is itself a signal.
+
+**Bug 11 in detail.**
+A parallel jaw is symmetric about its approach axis, so two orientations describe
+the same physical grasp.
+The roll was taken from the thumb-to-index axis, which crosses over mid-episode,
+so the wrist camera turned upside down partway through a clip.
+Nothing failed, and the trajectory stayed correct.
+
+The fix resolves the ambiguity explicitly, in two passes, but not in the order
+that first suggests itself.
+Applying the canonical test per frame and then enforcing continuity does not
+work: where the gripper is near vertical, both orientations are almost equally
+aligned with world up, so the per-frame test is decided by noise.
+Measured, that ordering re-inverted 2 to 12 frames per clip that the canonical
+pass had just corrected.
+Continuity runs first and chains each frame to its neighbour by full rotation
+distance, which leaves exactly one unknown, the sign of the chain.
+A single vote against world up then settles that sign for the whole clip.
+Mid-episode flips become impossible by construction.
+
+World up comes from the ArUco marker plane in Stage 1, not from a convention,
+because COLMAP's world orientation is arbitrary.
+
+Measured on the raw per-frame gripper poses, before and after both fixes:
+
+| clip | flips before | median up before | flips after | median up after |
+|---|---|---|---|---|
+| demo_0 | 3 | 162.4° | **1** | 16.3° |
+| demo_1 | 5 | 71.1° | **1** | 35.1° |
+| demo_2 | 4 | 160.8° | 0 | 19.2° |
+| demo_3 | 2 | 153.0° | 0 | 27.0° |
+| demo_4 | 9 | 118.8° | 0 | 30.2° |
+
+Both columns are measured on the same input, the raw per-frame gripper poses
+with velocity outliers already removed, so the pair is comparable. An earlier
+version of this table quoted a "before" measured without that removal, which
+made two of the rows disagree with the code that produced the "after".
+
+Four of the five clips were mostly upside down before, with a median past 90
+degrees. All five now sit between 16 and 35 degrees of world up.
+
+demo_0 and demo_1 keep one flip each. Those are not wrist motion and the
+velocity gate below does not flag them: the palm is steady while the fingers
+reconfigure, so the thumb-index axis swings on its own. Removing them means
+taking the gripper roll from the palm rather than from the thumb-index axis,
+which contradicts the pose mapping in Stage 4, so it is a design change and
+not a fix. Recorded, not hidden.
+
+**The frames that read as inverted are not the same defect.**
+Of 145 inverted frames across the five clips, none coincide with a
+velocity-flagged outlier. They split two ways:
+
+| clip | inverted | on a real detection | on a held pose after tracking stopped |
+|---|---|---|---|
+| demo_0 | 36 | 36 | 0 |
+| demo_1 | 5 | 5 | 0 |
+| demo_2 | 59 | 1 | 58 |
+| demo_3 | 37 | 4 | 33 |
+| demo_4 | 8 | 8 | 0 |
+
+demo_0, demo_1 and demo_4 are genuine hand turnover. The operator rolls their
+hand during the place, and the camera follows, which is what it should do.
+
+demo_2 and demo_3 are a different problem: the hand leaves the frame before the
+clip ends, and `slerp_fill` holds the last measured pose. demo_2 renders a
+frozen gripper for its last 59 frames, 42 per cent of the clip. That is a
+capture fault, and `CAPTURE-SOP.md` needs a rule to keep the hand in shot until
+after the release.
+
+A flip inside an episode is a defect, so `ROLL_FLIPS_MAX` is 0, not a tolerance.
+
+**Bug 12: hand tracking claimed motion no hand can make.**
+The residual flips traced to a different defect.
+At the failing step the hand rotation jumps 124 and 101 degrees in one frame and
+then holds, with the next step at 2 and 3 degrees.
+At 20 fps that is 2400 deg/s.
+A human wrist and forearm peak near 700 to 900 deg/s, so the pose was wrong,
+not fast.
+
+The gate measures the **palm** frame, not the gripper frame.
+This distinction decides whether the threshold means anything.
+The gripper roll is taken from the thumb-index axis, so it carries finger
+articulation, which is faster than the wrist and does not share its limit.
+The palm, built from the wrist and the index and middle knuckles, moves as one
+piece and is the thing a human limit applies to.
+The same 900 deg/s threshold flags 5 to 18 steps per clip on the gripper frame
+against 2 to 4 on the palm, and demo_4 alone drops from 18 to 3.
+Gating the gripper frame would have rejected all five episodes for motion that
+was mostly real finger movement.
+
+| clip | frames checked | flagged | fraction | longest run | peak |
+|---|---|---|---|---|---|
+| demo_0 | 123 | 4 | 3.2% | 1 | 2369 °/s |
+| demo_1 | 160 | 3 | 1.9% | 1 | 1094 °/s |
+| demo_2 | 73 | 2 | 2.7% | 1 | 1355 °/s |
+| demo_3 | 144 | 3 | 2.1% | 1 | 1146 °/s |
+| demo_4 | 108 | 3 | 2.8% | 1 | 1808 °/s |
+
+Every flagged frame is isolated, so all five episodes are repaired rather than
+rejected.
+A repaired frame is filled from its neighbours and recorded as filled.
+`ee_trajectory.npz` carries `hand_measured` and `hand_filled` per frame, so the
+export never presents a filled frame as a measured one.
+
+**Why the reject rules are what they are.**
+`HAND_OUTLIER_MAX_RUN` is 1.
+Two consecutive bad frames span 100 ms at 20 fps, and real motion happens inside
+that window, so filling a run invents a trajectory instead of recovering one.
+One frame is 50 ms with measurement on both sides, which interpolation can carry.
+`HAND_OUTLIER_MAX_FRACTION` is 0.05.
+Above that, more than one control sample in twenty is filled rather than
+measured, and describing the trajectory as a measurement stops being true.
+Both numbers come from the fill argument, not from the observed 1.9 to 3.2 per
+cent, which is why they would still reject a worse capture.
+
+**Bug 13: the CUDA splat trainer had no densification strategy.**
+A 30,000 step run on a 4090 reached about 28 dB PSNR, against 19.1 dB from the
+Metal path at 3,000 steps, so the port looked justified and the numbers looked
+healthy.
+The Gaussian count stayed at exactly 13,667 for all 30,000 steps, which is the
+COLMAP seed count, and PSNR was flat from step 2,000 onward.
+Roughly 28,000 steps did nothing.
+
+Adaptive density control is most of what makes 3DGS work, and `train_gsplat.py`
+never created a strategy object at all.
+The loop refined the points COLMAP already found and could never add one.
+
+The fix needed a second change that is easy to miss.
+gsplat's `DefaultStrategy` rewrites optimizer state whenever it clones, splits
+or prunes, and it looks that state up **by parameter name**.
+The trainer used a single Adam over five parameter groups, which gives the
+strategy no key to look up, and `check_sanity` requires `params` and
+`optimizers` to hold identical keys.
+So the optimizer had to become one Adam per parameter first.
+
+The trainer now raises at step 2,000 if the Gaussian count has not grown.
+This is the third defect in this table whose only symptom was a number that
+never moved, after bug 3 and bug 5.
+
+*Numbered 13 rather than 12: the hand velocity defect above took 12 first.*
+
+**What fixing bug 13 then exposed.**
+Densification alone moved mean PSNR over all 193 views from 28.93 to 30.25 dB.
+That is a poor return for 51 times the Gaussians, and the gap was the finding.
+
+Two more omissions came out of chasing it, both measured rather than guessed.
+
+*Bug 14.*
+COLMAP solved the camera as SIMPLE_RADIAL with k1 = 0.1088, which displaces a
+pixel by 26 px at the image corner.
+gsplat rasterises a pure pinhole model and has nowhere to put that term.
+Reconstruction error rose monotonically from the principal point outward,
+31.8 dB at the centre against 29.0 dB at the edge, which is the signature.
+The images are now undistorted before training.
+
+*Bug 15.*
+The reference 3DGS decays the position learning rate by 100x across the run.
+This trainer held it constant to the last step, so the Gaussians kept taking
+full-size steps and never settled.
+
+Together with a structural term in the loss, the three fixes give:
+
+| splat | Gaussians | mean PSNR over 193 views | centre to edge |
+|---|---|---|---|
+| original, no densification | 13,667 | 28.93 dB | 31.10 to 27.38 |
+| densification only | 704,979 | 30.25 dB | 31.94 to 29.04 |
+| plus undistortion, lr decay, SSIM | 1,530,082 | **35.21 dB** | **35.35 to 33.19** |
+
+Peak GPU memory 6.5 GiB of 24, and the run takes about 9 minutes.
+Pruning also started working: the largest Gaussian is 0.46 m across a 0.75 m
+scene, against 31.3 m before, and oversized Gaussians fell from 680 to 180.
+
+**Bug 19: the marker reference ignored which frames saw the marker.**
+`estimate_marker_world_pose` thins its input when more than 40 frames are
+valid:
+
+```python
+indices = [i for i in range(len(frame_names)) if valid[i]]
+if len(indices) > max_frames:
+    indices = list(np.linspace(0, len(indices) - 1, max_frames).astype(int).tolist())
+```
+
+The second line builds a linspace over **positions** and then uses those
+numbers as **frame indices**. The mask is discarded, and the function reads the
+first `len(indices)` frames of the clip instead of the frames that actually saw
+the marker. It should index back through `indices`.
+
+This sat in every marker agreement check the project has run.
+
+It was found by accident. A hypothesis needed testing, that session 4's marker
+reference was weakly constrained because all 77 of its detections are
+far-range and confined to two of eight azimuth sectors. Bootstrapping the
+reference over random halves of the detections returned **exactly zero spread**
+across twelve trials, which is not a stable estimate but a stuck one.
+
+With the bug fixed the test ran properly and **refuted the hypothesis**: the
+reference is stable to 0.04 cm and 0.09 degrees, two orders of magnitude below
+the 1.79 to 3.29 cm and 1.72 to 7.02 degree disagreement it is used to measure.
+Far-range and one-sided did not make it shaky. The disagreement is in the demo
+poses or the per-frame planar solve.
+
+Worth recording plainly: fixing this changed the measured agreement by less
+than 0.02 cm. The bug was real and long-standing, and on this data the frames
+it wrongly chose happened to be similar to the right ones. A real defect with
+no observable effect here is still a defect, because the next capture would not
+be so lucky.
+
+**Bug 17: a QC gate that was never wired in.**
+`max_reproj_error_px: 1.5` sat in `configs/default.yaml` from the start,
+documented and plausible, and no code ever read it.
+Only `min_registration_rate` was enforced.
+Sessions 1 to 3 all measured well under the limit, so nothing revealed it.
+Session 4 measured **1.5169 px** and Stage 1 reported `ok`.
+
+A gate nobody enforces is worse than no gate. An unset threshold is visibly
+missing; a threshold sitting in the config reads like a guarantee, and every
+later decision is taken on the assumption that it held.
+Both reconstruction gates are now evaluated together in `qc.reconstruction_gates`
+and recorded per run, pass or fail.
+The 1.5 was left where it was.
+
+**Bug 18: the pre-flight ceiling moved with the thing it measured.**
+The pre-flight ratio divides demo-to-scan matches by the scan's own self-match
+ceiling, and that ceiling was measured between scan frames about one second
+apart.
+One second is a proxy for baseline, and it only holds if the camera moves at a
+constant speed.
+
+Session 4's scan sweeps three passes at three speeds in 69 seconds, so its
+one-second pairs span a much wider baseline than session 3's.
+The ceiling fell from 572 to 232, and the ratio rose from 0.76 to between 0.86
+and 1.02 across five clips, including one above 1.0 which should have been
+impossible to read as good news.
+Absolute matchability had **halved**, 436 to 214.
+The metric reported an improvement where there was a regression, because its
+denominator degraded faster than its numerator.
+
+The ceiling is now measured between scan pairs whose features travel about as
+far across the image as the demo-to-scan pairs do, which compares like with
+like without needing a reconstruction that pre-flight runs before there is one.
+The baseline used is reported in pixels.
+A second gate on the absolute count now sits beside the ratio, because either
+alone can mislead: a ratio is blind to a uniformly poor scan, and a count is
+blind to texture, resolution and keypoint budget.
+
+**Bug 16: the Metal out-of-memory was not what it looked like.**
+The Metal splat ran out of memory and the cause was assumed to be
+densification.
+Instrumented over 500 steps, logging the allocator every 50, at a near-constant
+60,000 Gaussians:
+
+| step | Gaussians | allocated | driver |
+|---|---|---|---|
+| 1 | 60,000 | 1.02 GiB | 3.59 GiB |
+| 100 | 60,000 | 1.02 GiB | 4.20 GiB |
+| 200 | 60,000 | 1.02 GiB | 4.68 GiB |
+| 300 | 61,170 | 1.03 GiB | 5.20 GiB |
+| 400 | 61,704 | 1.03 GiB | 5.78 GiB |
+| 500 | 61,214 | 1.03 GiB | 6.34 GiB |
+
+Tensor memory is flat.
+Driver memory climbs about 5.5 MiB per step and is still climbing at step 500,
+which extrapolates to roughly 20 GiB by step 3,000.
+The MPS caching allocator keeps every block it has ever used.
+The model was never the problem.
+
+Calling `torch.mps.empty_cache()` every 50 steps holds driver memory between
+3.48 and 3.66 GiB over the same 500 steps, with the same Gaussian count.
+That is now `scene.splat.empty_cache_interval`, on by default.
+
 ### Capture sessions
 
 Three sessions, and the difference between them is entirely capture technique.
@@ -48,6 +356,27 @@ The pipeline code that processed session 1 and session 3 is the same code.
   5 to 10 cm of the object so it stays inside the demo crop, and raised the
   close-pass fraction from 37% to 60%. Raw matches 212 → 436, ratio 0.39 → 0.76.
 
+**Metric scale verified twice over, session 4.** The marker gives
+0.10095 m per reconstruction unit. Independently, the task object is a cube
+measured with a ruler at 76.2 mm; reconstructed under that scale its three
+sides come out **81.5, 80.3 and 72.7 mm**, mean 78.2 mm, a **+2.6 per cent**
+disagreement.
+
+Two independent sources agreeing to 2.6 per cent is the strongest verification
+in the project. The marker is the one to trust, and the two are not averaged:
+it is a rigid printed plane with sharp corners solved over 77 frames, while the
+cube is soft, rounded and reconstructed from a partial shell, and the spread
+across its own three sides is 8.8 mm, larger than the disagreement being
+measured. The cube can confirm the marker to within its own precision. It
+cannot overturn it.
+
+Measuring the cube needs care. A first attempt fitted an oriented box by PCA
+over every cube point and reported 100 x 91 x 71 mm, which is wrong for a
+reason worth recording: the cube sits on the desk, so only three faces
+reconstruct, and principal axes fitted to a partial shell mix the vertical
+extent with a face diagonal. Fitting the desk plane and measuring the vertical
+edge against it, then the top face's own extents, gives the numbers above.
+
 **Two measurements worth keeping, both from session 3:**
 
 Of the 64 scan frames the demo matched best, **0% came from the wide orbit and
@@ -66,6 +395,35 @@ signal. Both checks that now catch this, the pre-flight ratio and the
 physical-plausibility test, exist because of that session. See `src/wristview/qc.py`
 for the thresholds and the evidence recorded beside each one, and
 `CAPTURE-SOP.md` for the procedure that avoids it.
+
+### Pre-flight, all four sessions re-scored
+
+Under the corrected metric, with the ceiling taken at a matched baseline rather
+than a matched time:
+
+| Session | ceiling | baseline | demo to scan | ratio | verdict |
+|---|---|---|---|---|---|
+| 1 | 524 | 304 px | **90** | 0.17 | fail |
+| 2 | 448 | 353 px | **212** | 0.47 | fail on the absolute gate |
+| 3 | 622 | 96 px | **436** | 0.70 | **pass** |
+| 4 | 95 | 737 px | **214** | 2.26 | fail on the absolute gate |
+
+**The trend is 90, 212, 436, 214.** Session 4 regressed to roughly session 2's
+matchability while every other thing about it improved: better object, better
+marker coverage in the demos, a genuine close pass, 99.7 per cent registration.
+
+**The ratio is still not trustworthy, and the fix only half worked.** Matching
+the ceiling on feature displacement made session 4 worse, 1.02 to 2.26, because
+displacement conflates a change of scale with a change of baseline. Session 4's
+demos sit about 0.3 m from the surface while much of its scan is at 1.1 m, so
+features appear at very different image sizes and the displacement reads 737 px
+even where the match is good. The scan pairs then selected to match that
+"baseline" are genuinely poor ones, the ceiling collapses to 95, and the ratio
+inflates further.
+
+So the absolute count is the gate to trust. It reproduces all four known
+outcomes with no tuning. The ratio is kept as a diagnostic, because a ratio
+needs a trustworthy denominator and no denominator tried so far has been one.
 
 **Sequencing:** see `wristview-runbook.md`. Path A there is two hours and produces the evidence needed at Actuate on 18 August. This build is Path B, and it can run unattended in parallel.
 

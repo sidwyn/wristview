@@ -110,6 +110,12 @@ scene:
     resolution: 540
     sh_degree: 2
     init_points: 60000
+    # Hand freed blocks back to the driver this often. The MPS caching
+    # allocator never releases on its own: measured at a constant 60,000
+    # Gaussians, driver memory climbed 3.59 to 6.34 GiB over 500 steps and
+    # kept rising, while allocated tensor memory held at 1.02 GiB. That climb,
+    # not densification, is what ran the Metal path out of memory.
+    empty_cache_interval: 50
     position_lr: 0.00016
     feature_lr: 0.0025
     opacity_lr: 0.05
@@ -210,6 +216,12 @@ estimate:
     model_id: depth-anything/Depth-Anything-V2-Small-hf
     input_size: 518
   pose:
+    # The object's real height, measured with a ruler, in metres. Together with
+    # the desk plane from Stage 1 this is the only scale input the object pose
+    # needs, and it replaces the monocular depth path entirely. Set to 0 to
+    # fall back to depth, which is what floated session 4's cube 85 mm above a
+    # desk it was resting on while reporting a 1.1 mm residual.
+    object_height_m: 0.0762
     # Trim this fraction of the worst-fitting points before each rigid fit.
     icp_trim_fraction: 0.2
     icp_iterations: 20
@@ -224,6 +236,17 @@ retarget:
     finger_length_m: 0.055
     palm_depth_m: 0.06
   grasp:
+    # contact = fingertip-to-object distance plus a stable hand-to-object
+    # relative pose. width = the old thumb-to-index test, kept only for
+    # comparison. Width scored 57.9% against ground truth on a handle grasp.
+    method: contact
+    # Half the object's largest dimension. Measured from the segmented object
+    # cloud where one exists.
+    object_radius_m: 0.035
+    contact_margin_m: 0.03
+    release_margin_m: 0.05
+    # How still the object must sit in the hand frame to count as carried.
+    stability_tol_m: 0.02
     # Derive the open and closed thresholds from each episode's own width
     # distribution. A wrapped grasp on a drinking glass holds the thumb and
     # index about 5.8 cm apart while a small block closes under 4 cm, so one
@@ -259,9 +282,20 @@ render:
   max_frames: 0
   # Wrist camera pose relative to the end-effector frame.
   # Translation in metres, rotation as roll, pitch, yaw in degrees.
+  # A fixed camera mount in the gripper frame, aimed at the point the fingers
+  # close on. Not derived from hand anatomy: the approach axis of a hand
+  # wrapped around a mug is horizontal, and a camera pointed along it looks
+  # across the desk rather than at the object.
+  #
+  # Tune mount_back_m and mount_up_m for the rig; raise aim_ahead_m to push
+  # the finger tips further down the frame.
   wrist_camera:
-    translation_m: [0.0, -0.04, -0.08]
-    rotation_rpy_deg: [0.0, -25.0, 0.0]
+    # These three put the finger tips about 77 percent of the way down the
+    # frame, which is how DROID and Open X wrist views are framed.
+    mount_back_m: 0.10      # behind the finger tips, along -z
+    mount_up_m: 0.10        # above the jaw line, along -y
+    aim_ahead_m: 0.14       # look this far beyond the finger tips
+    grasp_offset_m: 0.02    # finger tips ahead of the gripper origin, matches retarget.origin_offset_m
     fov_deg: 90.0
   # Target deployment camera model. `pinhole` or `fisheye`.
   camera_model: fisheye
