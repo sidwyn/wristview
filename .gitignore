@@ -18,17 +18,31 @@ models/
 pretrained_models/
 
 # Source footage. Large binaries do not belong in git without LFS.
-# The clips live in wristview-videos/ locally; the README says what to put there.
 #
-# Recursive globs, not wristview-videos/*.mov: sessions are filed into dated
-# subfolders, so a single-level pattern stopped matching and 800 MB of video
-# went into a commit before GitHub rejected the push.
-wristview-videos/**/*.mov
-wristview-videos/**/*.mp4
-wristview-videos/**/*.MOV
-wristview-videos/**/*.MP4
-wristview-videos/*.mov
-wristview-videos/*.mp4
+# Ignore the whole directory rather than a list of extensions. Two earlier
+# versions of this rule failed: `wristview-videos/*.mov` stopped matching once
+# sessions were filed into dated subfolders and 800 MB went into a commit, and
+# an extension list would still miss .m4v, .avi, .mkv, and the .LRV and .THM
+# sidecars a phone writes beside each clip. Anything dropped in here is
+# footage unless it is a note.
+wristview-videos/**
+!wristview-videos/**/
+!wristview-videos/**/*.md
+
+# Belt and braces: video anywhere in the tree, not just that folder.
+*.mov
+*.MOV
+*.mp4
+*.MP4
+*.m4v
+*.avi
+*.mkv
+*.webm
+*.insv
+*.lrv
+*.LRV
+*.thm
+*.THM
 
 .DS_Store
 
@@ -36,3 +50,9 @@ wristview-videos/*.mp4
 deliverables/**/*.mp4
 deliverables/**/*.png
 exports/
+
+# Trained splats and other large binary artifacts. A 361 MB tensor file is not
+# source. Committing one is how this repo once grew to 1.1 GB.
+artifacts/
+*.pt
+*.ply

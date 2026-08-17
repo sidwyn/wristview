@@ -1,0 +1,44 @@
+#!/bin/sh
+# Refuse to commit source footage or any other large binary.
+#
+# .gitignore is not enough on its own. It says nothing about a file added with
+# `git add -f`, and it has no effect at all once a file is tracked. This repo
+# has already been to 1.1 GB once: a single-level glob stopped matching when
+# sessions moved into dated subfolders, 800 MB of video went into a commit, and
+# the filter-branch that removed it also deleted the source clips from disk.
+#
+# Install with:  git config core.hooksPath tools/hooks
+
+limit=20971520   # 20 MB
+fail=0
+
+for path in $(git diff --cached --name-only --diff-filter=ACM); do
+    [ -f "$path" ] || continue
+
+    case "$path" in
+        *.mov|*.MOV|*.mp4|*.MP4|*.m4v|*.avi|*.mkv|*.webm|*.insv|*.lrv|*.LRV|*.thm|*.THM)
+            echo "blocked: $path is video. Footage lives in wristview-videos/ and stays out of git."
+            fail=1
+            continue
+            ;;
+        *.pt|*.ply|*.npz)
+            echo "blocked: $path is a binary artifact. Regenerate it, do not commit it."
+            fail=1
+            continue
+            ;;
+    esac
+
+    size=$(wc -c < "$path" | tr -d ' ')
+    if [ "$size" -gt "$limit" ]; then
+        echo "blocked: $path is $((size / 1048576)) MB, over the 20 MB limit."
+        fail=1
+    fi
+done
+
+if [ "$fail" -ne 0 ]; then
+    echo ""
+    echo "Nothing was committed. If a file genuinely belongs in git, commit it with"
+    echo "  git commit --no-verify"
+    echo "and say in the message why it is an exception."
+    exit 1
+fi
