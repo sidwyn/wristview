@@ -35,6 +35,8 @@ from ..geometry import (
     slerp_fill,
     smooth_poses,
 )
+from .. import reprojection
+from ..mount import wrist_camera_offset
 from ..grasp import detect_grasp_by_contact
 from ..logging_setup import get
 from ..qc import hand_velocity_gates, hand_velocity_outliers
@@ -287,7 +289,20 @@ def _retarget_episode(
 
     hand = np.load(estimate_dir / "hand.npz")
     landmarks = hand["landmarks_world"]
+    landmarks_px = hand["landmarks_px"]
     hand_valid = hand["valid"]
+
+    # Stage 1's refined camera, not Stage 0's prior. The prior has been wrong
+    # by a factor of 1.5 on real footage, and a wrong focal moves depth, which
+    # is exactly what the checks below are trying to detect.
+    from ..camera import Intrinsics
+
+    cameras_path = ctx.stage_dir(1, create=False) / "cameras.json"
+    intrinsics = (
+        Intrinsics.from_dict(read_json(cameras_path)["intrinsics"])
+        if cameras_path.exists()
+        else None
+    )
 
     # A clip whose selected hand changed side is not a weak episode, it is a
     # different hand from one moment to the next. Nothing downstream can
@@ -371,7 +386,55 @@ def _retarget_episode(
     # distance barely changes when an object is held by its handle.
     grasp_cfg = cfg.get("grasp", {})
     method = str(grasp_cfg.get("method", "contact"))
-    if method == "contact":
+
+    # Stage 3 decides contact against the object's resting pose, which is the
+    # only pose that is trustworthy at the moment contact happens. The detector
+    # below instead measures fingertip distance to the *tracked* object, and on
+    # session 6 that was pinned to the desk for the whole clip, so it returned 0
+    # closed frames on all four clips while the operator visibly picked things
+    # up. Prefer the stage that measured the right thing, and record both so the
+    # disagreement stays visible.
+    contact_path = estimate_dir / "contact_runs.json"
+    stage3_runs = []
+    if contact_path.exists():
+        stage3_runs = read_json(contact_path).get("runs") or []
+
+    if stage3_runs:
+        closed = np.zeros(len(landmarks), dtype=bool)
+        for start, stop in stage3_runs:
+            closed[int(start):int(stop)] = True
+        onsets = np.nonzero(closed)[0]
+        _, detector_diagnostics = detect_grasp_by_contact(
+            landmarks, hand_valid, object_positions, object_valid, fps, grasp_cfg
+        )
+        grasp_diagnostics = {
+            "signal": "stage3_contact_runs",
+            "why": (
+                "contact decided in Stage 3 against the object's resting pose. "
+                "The fingertip-distance detector is run alongside for comparison "
+                "but not used, because it measures distance to the tracked "
+                "object, which is wrong for every carried frame."
+            ),
+            "closed_frames": int(closed.sum()),
+            "closed_fraction": round(float(closed.mean()), 4),
+            "transitions": int(len(np.nonzero(np.diff(closed.astype(int)))[0])),
+            "runs": [[int(a), int(b)] for a, b in stage3_runs],
+            "grasp_onset_frame": int(onsets[0]) if len(onsets) else None,
+            "release_frame": (
+                int(onsets[-1] + 1) if len(onsets) and onsets[-1] + 1 < len(closed) else None
+            ),
+            "detector_for_comparison": {
+                "closed_frames": detector_diagnostics.get("closed_frames"),
+                "contact_gap_median_m": detector_diagnostics.get("contact_gap_median_m"),
+            },
+        }
+        log.info(
+            "%s: grasp from Stage 3 contact runs, closed on %d/%d frames (%.0f%%), "
+            "runs %s. The fingertip detector would have said %s.",
+            clip_id, int(closed.sum()), len(closed), closed.mean() * 100,
+            grasp_diagnostics["runs"], detector_diagnostics.get("closed_frames"),
+        )
+    elif method == "contact":
         closed, grasp_diagnostics = detect_grasp_by_contact(
             landmarks, hand_valid, object_positions, object_valid, fps, grasp_cfg
         )
@@ -447,6 +510,68 @@ def _retarget_episode(
     resampled_poses, resampled_widths, resampled_closed, times = resample(
         poses, widths, closed, fps, target_hz
     )
+
+    # ---- reprojection gate, continued from Stage 3 ------------------------
+    #
+    # Stage 3 checks the hand and the object. The two quantities this stage
+    # invents are the end effector and the wrist camera, and both are checked
+    # against what the source frame shows, for the same reason: a 3D quantity
+    # nobody projects back is a quantity nobody has checked.
+    poses_path = ctx.stage_dir(2, create=False) / clip_id / "camera_poses.npy"
+    camera_poses = np.load(poses_path) if poses_path.exists() else None
+    wrist_cfg = (ctx.config.get("render", {}) or {}).get("wrist_camera", {}) or {}
+    standoff_m = wrist_cfg.get("standoff_m")
+    grasp_offset_m = float(wrist_cfg.get("grasp_offset_m", 0.02))
+
+    qc_reports = [] if (intrinsics is None or camera_poses is None) else [
+        reprojection.effector_check(
+            poses[:, :3, 3], hand_valid, landmarks, hand_valid, grasp_offset_m,
+        )
+    ]
+    if intrinsics is None or camera_poses is None:
+        log.warning(
+            "%s: no refined camera or no localized poses, so this clip goes out "
+            "unchecked", clip_id,
+        )
+    if standoff_m:
+        # Use Stage 5's own mount geometry rather than a second copy of it.
+        # Computing the eye independently is how the first version of this
+        # check reported 0.15 m against a correct 0.25 m: it measured from the
+        # wrist, while the mount is specified from the fingertips.
+        offset = wrist_camera_offset(wrist_cfg)
+        eye_local = np.asarray(offset[:3], dtype=np.float64)
+        origins = np.array([
+            pose[:3, :3] @ eye_local + pose[:3, 3] for pose in poses
+        ])
+        fingertip_local = np.array([0.0, 0.0, grasp_offset_m])
+        grasp_points = np.array([
+            pose[:3, :3] @ fingertip_local + pose[:3, 3] for pose in poses
+        ])
+        qc_reports.append(
+            reprojection.standoff_check(
+                origins, grasp_points, hand_valid, float(standoff_m)
+            )
+        )
+    else:
+        log.warning(
+            "%s: render.wrist_camera.standoff_m is unset, so the wrist camera "
+            "cannot be checked. real06b shipped this way and nothing said so.",
+            clip_id,
+        )
+
+    for report in qc_reports:
+        log.info("%s: %s -> %s", clip_id, report["check"],
+                 {k: v for k, v in report.items()
+                  if k in ("median_px", "p90_px", "median_m", "frames", "passed")})
+    qc_failures = reprojection.gate(qc_reports)
+    for failure in qc_failures:
+        log.error("%s: REPROJECTION GATE FAILED: %s", clip_id, failure)
+    write_json(out_dir / "qc.json", {
+        "clip_id": clip_id,
+        "reprojection": qc_reports,
+        "passed": not qc_failures,
+        "failures": qc_failures,
+    })
 
     trajectory_path = out_dir / "ee_trajectory.npy"
     np.save(trajectory_path, resampled_poses)

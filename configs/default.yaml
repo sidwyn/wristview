@@ -197,6 +197,19 @@ estimate:
     # Metric length of the index finger MCP to wrist bone. Scales MediaPipe's
     # unitless hand model into metres.
     hand_scale_m: 0.095
+    # Which hand to follow: largest, Left or Right.
+    #
+    # "largest" takes the biggest detection box each frame. It suits a clip
+    # with one acting hand, and it breaks when two hands act at once, because
+    # the nearer hand is the larger one and the selection crosses between them.
+    #
+    # Naming a side follows that hand and ignores the other, which makes a
+    # two-handed clip usable as a single-arm episode. It needs the WiLoR
+    # backend, which reports handedness. Frames where the wanted hand is not
+    # detected, or where two detections claim it, become gaps.
+    select: largest
+    # Per-clip override, keyed by clip id: {select: Right}
+    per_clip: {}
   object:
     # groundingdino_sam2, or color. `auto` tries the models, then falls back.
     backend: auto
@@ -222,6 +235,35 @@ estimate:
     # fall back to depth, which is what floated session 4's cube 85 mm above a
     # desk it was resting on while reporting a 1.1 mm residual.
     object_height_m: 0.0762
+    # Per clip, because one set can hold several objects and different clips
+    # manipulate different ones. Session 6 proved the need: with a single
+    # prompt the detector locked onto the bin, which nobody ever moved.
+    per_clip: {}
+    # What happens once the object is picked up.
+    #
+    # The plane solve above pins the object's centre to `offset + height / 2`,
+    # so the tracked object cannot rise. Session 6 clip 5 sat at 2.000 cm on all
+    # 185 valid frames, spread 0.0000 mm, while the hand reached 24.7 cm. That
+    # is right until contact and wrong for the whole carry, and it reached the
+    # surface as grasp detection finding 0 of 186 frames.
+    carry:
+      enabled: true
+      # The object is at rest while its plane-solved position stops moving.
+      # Asking instead whether the hand is far from the object does not work:
+      # during a carry the plane solve leaves the object on the desk while the
+      # hand is in the air, so every carried frame looks clear. Session 6
+      # clip 1 admitted 336 of 338 frames that way, with 7.36 cm of scatter.
+      rest_stillness_m: 0.01
+      min_rest_frames: 5
+      # Fingertip-to-surface gap that starts a grasp, measured against the
+      # resting position, which is the one position known to be right.
+      contact_margin_m: 0.03
+      min_contact_frames: 3
+      # Release is disagreement, not distance: while the object is held, the
+      # silhouette ray and the hand point at the same place. This is how far
+      # apart they may drift before the object is judged to be out of the hand.
+      release_ray_m: 0.06
+      release_frames: 3
     # Trim this fraction of the worst-fitting points before each rigid fit.
     icp_trim_fraction: 0.2
     icp_iterations: 20

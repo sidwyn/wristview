@@ -180,6 +180,16 @@ def _estimate_episode(
     # cross from one hand to the other mid-episode without anything failing.
     # The trajectory that comes out is smooth and wrong.
     hand_side = np.full(count, "", dtype=object)
+    hands_seen = np.zeros(count, dtype=int)
+    # Selecting by label instead of by size makes a two-handed clip usable as a
+    # single-arm clip: the wanted hand is followed throughout, and the other is
+    # ignored rather than competing for the selection. It costs the frames the
+    # detector mislabels, which become gaps, and the gaps are counted below.
+    hand_select = str(
+        (cfg.get("hand", {}).get("per_clip") or {}).get(clip_id, {}).get("select")
+        or cfg.get("hand", {}).get("select", "largest")
+    )
+    hand_selection = np.full(count, "", dtype=object)
 
     hand_kind = models["hand_kind"]
     groundtruth_hands = None
@@ -213,6 +223,7 @@ def _estimate_episode(
         hand_valid[index] = True
         hand_confidence[index] = frame.confidence
         hand_side[index] = frame.handedness
+        hands_seen[index] = getattr(frame, "hands_in_frame", 0)
 
     with rec.timed(f"hand.{clip_id}"):
         if groundtruth_hands is not None:
@@ -222,13 +233,23 @@ def _estimate_episode(
                     _record(index, frame)
         else:
             estimator = models["hand_estimator"]
+            if hasattr(estimator, "select"):
+                estimator.select = hand_select
+            elif hand_select != "largest":
+                raise ValueError(
+                    f"{clip_id}: hand.select={hand_select!r} needs the WiLoR "
+                    f"backend, but {hand_kind} is running"
+                )
             for index, name in enumerate(frame_names):
                 image = cv2.imread(str(frames_dir / name))
                 if image is None:
                     continue
                 frame = estimator.process(image, intrinsics)
+                hand_selection[index] = frame.selection
                 if frame.detected:
                     _record(index, frame)
+                else:
+                    hands_seen[index] = getattr(frame, "hands_in_frame", 0)
                 if (index + 1) % 100 == 0:
                     log.info(
                         "  %s: hand %d/%d frames, %d detected",
@@ -255,23 +276,50 @@ def _estimate_episode(
 
     # The work surface, from Stage 1, and the object's measured height. Both
     # are needed to place a resting object without a depth estimate.
+    from .. import carry
+    from .. import reprojection
     from .. import plane as plane_module
 
     desk_normal = desk_offset = None
-    scene_meta = read_json(ctx.stage_dir(1, create=False) / "scale.json")
+    # A run with no marker has no scale.json at all. Reading it unconditionally
+    # is a missing-capability error dressed up as a crash, and this same line
+    # already broke Stage 4 once.
+    scale_path = ctx.stage_dir(1, create=False) / "scale.json"
+    scene_meta = read_json(scale_path) if scale_path.exists() else {}
     plane_meta = (scene_meta.get("diagnostics") or {}).get("desk_plane")
     if plane_meta and plane_meta.get("offset_m") is not None:
         desk_normal = np.asarray(plane_meta["normal"], dtype=np.float64)
         desk_offset = float(plane_meta["offset_m"])
         log.info("%s: desk plane from Stage 1, offset %.4f m, normal %s",
                  clip_id, desk_offset, np.round(desk_normal, 4).tolist())
-    object_height_m = float(pose_cfg.get("object_height_m", 0.0))
+    # Which object this clip manipulates, and how tall it is. Session 6 shot
+    # four clips on one set holding a cube, a bin and a tape measure, and three
+    # clips manipulate the cube while the fourth manipulates the tape measure.
+    # With one prompt for the whole run the detector took the most salient
+    # object, the bin, which never moves, and every object pose described a
+    # thing nobody touched.
+    per_clip = (pose_cfg.get("per_clip") or {}).get(clip_id, {})
+    if per_clip.get("prompt"):
+        instruction = str(per_clip["prompt"])
+    object_height_m = float(per_clip.get("object_height_m",
+                                         pose_cfg.get("object_height_m", 0.0)))
+    log.info("%s: tracking '%s', height %.1f mm", clip_id, instruction, object_height_m * 1000)
     if desk_normal is not None and object_height_m <= 0:
         log.warning(
             "%s: a desk plane exists but retarget.object_height_m is unset, so the "
             "depth path is used instead. Measure the object and set it.", clip_id,
         )
     object_source = np.full(count, "", dtype=object)
+    # The silhouette ray per frame, kept so the carry solve can place the object
+    # along it once the hand lifts it off the plane.
+    object_rays = np.zeros((count, 3))
+    object_ray_origins = np.zeros((count, 3))
+    object_ray_valid = np.zeros(count, dtype=bool)
+    # Silhouette centroids, in WORK pixels. The object path runs at a reduced
+    # resolution, so the reprojection gate has to use the scaled intrinsics or
+    # it will report a fixed fraction of the frame as error.
+    object_centroid_px = np.zeros((count, 2))
+    object_centroid_valid = np.zeros(count, dtype=bool)
     target_pose = np.eye(4)
     previous_gray: np.ndarray | None = None
     previous_mask: np.ndarray | None = None
@@ -366,6 +414,11 @@ def _estimate_episode(
                     object_valid[index] = True
                     object_rmse[index] = 0.0
                     object_source[index] = "plane"
+                    object_rays[index] = plane_report["ray_world"]
+                    object_ray_origins[index] = plane_report["camera_position"]
+                    object_ray_valid[index] = True
+                    object_centroid_px[index] = plane_report["centroid_px"]
+                    object_centroid_valid[index] = True
                     target_pose = pose
                     if canonical is None:
                         canonical_centroid = pose[:3, 3]
@@ -431,6 +484,60 @@ def _estimate_episode(
             object_rmse[index] = rmse
             target_pose = pose
 
+    # ---- the object leaves the plane -------------------------------------
+    #
+    # The plane solve places the object's centre at `offset + height / 2` on
+    # every frame, so the tracked object cannot rise. Session 6 clip 5 measured
+    # 2.000 cm above the desk on all 185 valid frames, to a spread of 0.0000 mm,
+    # while the hand carrying it reached 24.7 cm. That is correct before contact
+    # and wrong for the whole carry, and it surfaced downstream as grasp
+    # detection finding contact on 0 of 186 frames: fingertips cannot reach an
+    # object left behind on the table.
+    carry_report: dict = {"frames_carried": 0}
+    carry_cfg = pose_cfg.get("carry", {})
+    solved_on_plane = int(sum(1 for x in object_source if x == "plane"))
+    if bool(carry_cfg.get("enabled", True)) and solved_on_plane and hand_valid.any():
+        rest = carry.resting_pose(
+            object_poses, object_valid,
+            stillness_m=float(carry_cfg.get("rest_stillness_m", 0.01)),
+            min_rest_frames=int(carry_cfg.get("min_rest_frames", 5)),
+        )
+        if rest is None:
+            log.warning(
+                "%s: no frame had the object visible with the hand clear of it, "
+                "so the resting pose is unknown and the carry solve cannot run",
+                clip_id,
+            )
+        else:
+            rest_pose, rest_report = rest
+            radius = float(carry_cfg.get("object_radius_m", max(object_height_m, 0.02) / 2))
+            onsets = carry.contact_onsets(
+                hand_world, hand_valid, rest_pose[:3, 3], radius,
+                enter_m=float(carry_cfg.get("contact_margin_m", 0.03)),
+                min_frames=int(carry_cfg.get("min_contact_frames", 3)),
+            )
+            object_poses, object_valid, carry_report = carry.solve_carried(
+                object_poses, object_valid, object_rays, object_ray_origins,
+                hand_world, hand_valid, rest_pose, onsets,
+                release_ray_m=float(carry_cfg.get("release_ray_m", 0.06)),
+                release_frames=int(carry_cfg.get("release_frames", 3)),
+            )
+            carry_report["resting_pose"] = rest_report
+            for index in range(count):
+                if object_source[index] != "plane" and object_valid[index]:
+                    object_source[index] = "carried"
+            for start, stop in carry_report["contact_runs"]:
+                for index in range(start, stop):
+                    if object_valid[index]:
+                        object_source[index] = "carried"
+            log.info(
+                "%s: contact on %d frame(s) across %d run(s) %s; resting pose from "
+                "%d clear frame(s), scatter %.2f cm",
+                clip_id, carry_report["frames_carried"],
+                len(carry_report["contact_runs"]), carry_report["contact_runs"],
+                rest_report["frames_used"], rest_report["scatter_median_cm"],
+            )
+
     object_rate = float(object_valid.mean())
     by_plane = int(sum(1 for x in object_source if x == "plane"))
     if by_plane:
@@ -448,9 +555,52 @@ def _estimate_episode(
 
     # ---- write ------------------------------------------------------------
     # ---- hand identity guard ---------------------------------------------
-    sides = [s for s in hand_side[hand_valid] if s]
-    switches = sum(1 for a, b in zip(sides, sides[1:], strict=False) if a != b)
+    #
+    # Count a switch only where two hands were actually detected on one side of
+    # it. The defect this guards against is the largest-box selector crossing
+    # between two hands, which can only happen when two hands are in frame. A
+    # label that flips while a single hand is present is the detector
+    # mislabelling that one hand, and rejecting a clip for it is a false alarm.
+    #
+    # Session 6 made the difference concrete. The first version counted label
+    # changes alone and rejected all four clips, including the single-hand
+    # control, which flipped once in 149 frames with no second hand anywhere in
+    # the clip. Measuring the proxy rather than the defect is its own failure.
+    # A person has two hands. A frame reporting three is the detector failing,
+    # and it cannot be used as evidence that two hands were present: session 6's
+    # single-hand control was rejected on exactly one such frame, where WiLoR
+    # returned three detections while 148 other frames returned one.
+    order = [
+        i for i in np.nonzero(hand_valid)[0]
+        if hand_side[i] and int(hands_seen[i]) <= 2
+    ]
+    impossible = int(sum(
+        1 for i in np.nonzero(hand_valid)[0] if int(hands_seen[i]) > 2
+    ))
+    if impossible:
+        log.info(
+            "%s: %d frame(s) reported more than two hands and were left out of "
+            "the identity check, because a person has two hands and the count "
+            "is the detector's error, not evidence", clip_id, impossible,
+        )
+    sides = [str(hand_side[i]) for i in order]
+    kept = [int(hands_seen[i]) for i in order]
+    switches = 0
+    mislabels = 0
+    for a, b, na, nb in zip(sides, sides[1:], kept, kept[1:], strict=False):
+        if a == b:
+            continue
+        if max(na, nb) >= 2:
+            switches += 1
+        else:
+            mislabels += 1
     side_counts = {s: sides.count(s) for s in set(sides)}
+    if mislabels:
+        log.info(
+            "%s: %d hand label flip(s) ignored, only one hand was in frame at "
+            "the time, so the detector mislabelled one hand rather than the "
+            "selector crossing between two", clip_id, mislabels,
+        )
     if switches:
         log.error(
             "%s: the selected hand changed side %d times (%s). This clip's "
@@ -462,6 +612,75 @@ def _estimate_episode(
     elif sides:
         log.info("%s: hand identity stable, %s throughout", clip_id, sides[0])
 
+    # Selecting by label makes the counter above vacuous: every accepted frame
+    # carries the wanted label because that is the acceptance test, so `switches`
+    # is zero by construction and proves nothing. The defect it was built to
+    # catch, the trajectory jumping from one hand to the other, is still
+    # possible whenever the detector mislabels a hand, so it needs a measure
+    # that does not depend on the label. Displacement is that measure: two
+    # hands are tens of centimetres apart, and a crossing has to travel that
+    # distance in one frame step.
+    ambiguous = int(sum(1 for s in hand_selection if s == "ambiguous"))
+    absent = int(sum(1 for s in hand_selection if s == "absent"))
+    steps: list[float] = []
+    valid_indices = np.nonzero(hand_valid)[0]
+    for a, b in zip(valid_indices, valid_indices[1:], strict=False):
+        if b - a != 1:
+            continue    # a gap can hide real motion, so it is not a jump
+        steps.append(float(np.linalg.norm(hand_world[b, 0] - hand_world[a, 0])))
+    jump_max_cm = round(max(steps) * 100, 2) if steps else None
+    jump_p99_cm = (
+        round(float(np.percentile(steps, 99)) * 100, 2) if steps else None
+    )
+    if hand_select != "largest":
+        log.info(
+            "%s: selected by label (%s). %d frame(s) ambiguous, %d absent. "
+            "Largest single-frame wrist move %s cm, p99 %s cm. The label-switch "
+            "counter reads %d but is vacuous under label selection; the "
+            "displacement figures are what would show a crossing.",
+            clip_id, hand_select, ambiguous, absent,
+            jump_max_cm, jump_p99_cm, switches,
+        )
+
+    # ---- reprojection gate ------------------------------------------------
+    #
+    # Every 3D quantity is projected back into the frame it came from and
+    # compared with what was observed there. This is the check that would have
+    # caught the worst defect in this project on its first run: the hand's 3D
+    # position was collapsing toward the optical axis by a factor of 25, the 2D
+    # overlays stayed correct because they come from the detector, and grasp
+    # detection failing across three sessions looked like a grasp problem.
+    # Median reprojection error was 614 px and nothing was measuring it.
+    reports = [
+        reprojection.hand_check(hand_cam, hand_px, hand_valid, intrinsics),
+        reprojection.object_check(
+            object_poses, object_valid, object_centroid_px, object_centroid_valid,
+            camera_poses, work_intrinsics, sources=object_source,
+        ),
+    ]
+    for report in reports:
+        if report.get("frames"):
+            log.info(
+                "%s: %s, median %s px, p90 %s px over %d frames (%s)",
+                clip_id, report["check"], report["median_px"], report["p90_px"],
+                report["frames"], report["evidence"],
+            )
+    failures = reprojection.gate(reports)
+    for failure in failures:
+        log.error("%s: REPROJECTION GATE FAILED: %s", clip_id, failure)
+
+    write_json(out_dir / "qc.json", {
+        "clip_id": clip_id,
+        "reprojection": reports,
+        "passed": not failures,
+        "failures": failures,
+    })
+    if failures and bool(cfg.get("fail_on_reprojection", True)):
+        raise ValueError(
+            f"{clip_id}: reprojection gate failed, so no 3D quantity from this "
+            f"clip can be trusted. " + "; ".join(failures)
+        )
+
     hand_path = out_dir / "hand.npz"
     np.savez_compressed(
         hand_path,
@@ -471,8 +690,27 @@ def _estimate_episode(
         valid=hand_valid,
         confidence=hand_confidence,
         hand_side=np.array([str(s) for s in hand_side]),
+        hands_in_frame=hands_seen,
         hand_side_switches=np.array(switches),
+        hand_label_mislabels=np.array(mislabels),
+        hand_frames_impossible=np.array(impossible),
+        hand_select=np.array(hand_select),
+        hand_selection=np.array([str(s) for s in hand_selection]),
+        hand_frames_ambiguous=np.array(ambiguous),
+        hand_frames_absent=np.array(absent),
     )
+    # Stage 4 needs the contact runs, not just a report of them. Its own grasp
+    # detector measures fingertip distance to the tracked object, which cannot
+    # work while the object is solved on the plane: session 6 had the object on
+    # the desk and the hand 20 cm above it, so the detector found 0 frames on
+    # every clip. Contact decided here, against the resting pose, is the signal
+    # that survives.
+    write_json(out_dir / "contact_runs.json", {
+        "runs": carry_report.get("contact_runs", []),
+        "frames_carried": carry_report.get("frames_carried", 0),
+        "resting_pose": carry_report.get("resting_pose"),
+        "source": "carry.contact_onsets against the resting pose",
+    })
     object_pose_path = out_dir / "object_pose.npy"
     np.save(object_pose_path, object_poses)
     np.save(out_dir / "object_valid.npy", object_valid)
@@ -490,9 +728,17 @@ def _estimate_episode(
         "frames": count,
         "hand_backend": hand_kind,
         "hand_detection_rate": round(hand_rate, 4),
+        "hand_select": hand_select,
+        "hand_frames_ambiguous": ambiguous,
+        "hand_frames_absent": absent,
+        "hand_jump_max_cm": jump_max_cm,
+        "hand_jump_p99_cm": jump_p99_cm,
+        "hand_side_switches": switches,
+        "hand_side_switch_counter_vacuous": hand_select != "largest",
         "object_backend": object_kind,
         "depth_backend": depth_kind,
         "object_track_rate": round(object_rate, 4),
+        "carry": carry_report,
         "object_icp_rmse_median_m": (
             round(float(np.nanmedian(object_rmse)), 5) if object_valid.any() else None
         ),
