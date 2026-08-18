@@ -539,7 +539,7 @@ def _retarget_episode(
         # check reported 0.15 m against a correct 0.25 m: it measured from the
         # wrist, while the mount is specified from the fingertips.
         offset = wrist_camera_offset(wrist_cfg)
-        eye_local = np.asarray(offset[:3], dtype=np.float64)
+        eye_local = np.asarray(offset[:3, 3], dtype=np.float64)
         origins = np.array([
             pose[:3, :3] @ eye_local + pose[:3, 3] for pose in poses
         ])

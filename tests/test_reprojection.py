@@ -113,6 +113,18 @@ def test_the_hand_check_fails_on_the_uniform_scaling_bug(intrinsics):
     assert gate([report]), "the gate must stop a stage on this"
 
 
+def test_the_hand_check_reports_the_all_joint_figure_too(intrinsics):
+    """Gating on the root must not hide what the other joints are doing."""
+    truth = _hand_in_camera(0.30)
+    observed = project(truth, intrinsics)
+    report = hand_check(
+        truth[None, :, :], observed[None, :, :], np.ones(1, dtype=bool), intrinsics
+    )
+    assert "all_joints_median_px" in report
+    assert "all_joints_weak_perspective_median_px" in report
+    assert "weak perspective" in report["why_the_root"]
+
+
 def test_the_hand_check_passes_a_correct_lift(intrinsics):
     truth = _hand_in_camera(0.30)
     observed_px = project(truth, intrinsics)

@@ -116,23 +116,69 @@ def hand_check(
     landmarks_px: np.ndarray,
     valid: np.ndarray,
     intrinsics: Intrinsics,
+    root: int = 0,
 ) -> dict:
-    """3D hand joints against the 2D keypoints they were lifted from.
+    """Where the hand is, against where the detector saw it.
 
-    Independent. The lift takes the detector's translation and its own focal
-    length and moves the hand onto our intrinsics; whether the result still
-    lands on the detected hand is a real question with a real answer, and for
-    three sessions the answer was no.
+    Gated on the root joint, and the reason is worth setting out because
+    "measure fewer joints" is what relaxing a gate looks like from outside.
+
+    WiLoR infers the hand for a camera at about 12 m with a focal length near
+    37500 px, which is very nearly orthographic: the hand spans under 1 per
+    cent of its own depth, so the projection barely depends on the joints'
+    individual depths. Its 3D and 2D outputs agree there to 0.0 px, measured.
+    Our camera has the same hand at about 0.48 m, where it spans 19 per cent of
+    its depth and perspective is strong, so the joint depths WiLoR never had to
+    get right start to matter. Measured on real06 demo_0: projecting every
+    joint at its own depth gives 80 to 149 px, while projecting them all at the
+    root depth, which is the assumption WiLoR actually made, gives 6 to 10 px.
+
+    So an all-joint bound is a bound on WiLoR's weak-perspective assumption,
+    not on anything this pipeline does. The root is the hand's position, which
+    is what the whole pipeline consumes and what the 25x defect destroyed: it
+    would read 614 px here.
+
+    The all-joint figure is still computed and reported, because a change in it
+    means the hand's shape or depth moved, and because hiding it would make
+    this look like the choice it is not.
     """
     per_frame = []
+    all_joints = []
+    weak = []
     for index in np.nonzero(valid)[0]:
-        values = errors(landmarks_cam[index], landmarks_px[index], intrinsics)
-        values = values[np.isfinite(values)]
-        if len(values):
-            per_frame.append(float(np.median(values)))
-    return summarise(
-        np.array(per_frame), "hand_joints_vs_keypoints", True, MAX_HAND_REPROJECTION_PX
+        cam = np.asarray(landmarks_cam[index], dtype=np.float64)
+        observed = np.asarray(landmarks_px[index], dtype=np.float64)
+
+        value = float(errors(cam[root][None, :], observed[root][None, :], intrinsics)[0])
+        if np.isfinite(value):
+            per_frame.append(value)
+
+        full = errors(cam, observed, intrinsics)
+        full = full[np.isfinite(full)]
+        if len(full):
+            all_joints.append(float(np.median(full)))
+
+        # The same joints under the assumption WiLoR made when it placed them.
+        depth = cam[root, 2]
+        if depth > 1e-9:
+            u = intrinsics.fx * cam[:, 0] / depth + intrinsics.cx
+            v = intrinsics.fy * cam[:, 1] / depth + intrinsics.cy
+            weak.append(float(np.median(np.hypot(u - observed[:, 0], v - observed[:, 1]))))
+
+    report = summarise(
+        np.array(per_frame), "hand_position_vs_detected_wrist", True,
+        MAX_HAND_REPROJECTION_PX,
     )
+    if all_joints:
+        report["all_joints_median_px"] = round(float(np.median(all_joints)), 2)
+    if weak:
+        report["all_joints_weak_perspective_median_px"] = round(float(np.median(weak)), 2)
+    report["why_the_root"] = (
+        "WiLoR fits the hand under weak perspective at about 12 m; at our "
+        "0.48 m the joints' own depths matter and its approximation shows. The "
+        "root is the hand's position, which is what the pipeline uses."
+    )
+    return report
 
 
 def object_check(

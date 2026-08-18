@@ -1,0 +1,79 @@
+{
+  "run": "/private/tmp/claude-501/-Users-sidwyn-Documents-Documents-Personal-Projects-atlas/4c7d9149-910a-457c-9850-0c4d7292cfb6/scratchpad/runs/real06b",
+  "hero": "demo_0",
+  "window": {
+    "start_frame": 0,
+    "end_frame": 98,
+    "fps": 20.0,
+    "duration_s": 4.9,
+    "grasp_frame": 77,
+    "reach_frame": null,
+    "at_target_length": false
+  },
+  "ranking": [
+    {
+      "clip": "demo_0",
+      "score": 0.9801,
+      "grasp_frame": 77,
+      "window": [
+        0,
+        98
+      ],
+      "duration_s": 4.9,
+      "coverage_mean": 0.9601,
+      "coverage_min": 0.7744,
+      "sharpness_mean": 681.9,
+      "near_black_frames": 0,
+      "rest_noise_p95_m": 0.00399,
+      "peak_displacement_m": 0.2401
+    },
+    {
+      "clip": "demo_3",
+      "score": 0.8954,
+      "grasp_frame": 15,
+      "window": [
+        0,
+        36
+      ],
+      "duration_s": 1.8,
+      "coverage_mean": 0.951,
+      "coverage_min": 0.8844,
+      "sharpness_mean": 499.8,
+      "near_black_frames": 0,
+      "rest_noise_p95_m": 0.00389,
+      "peak_displacement_m": 0.4329
+    },
+    {
+      "clip": "demo_1",
+      "score": 0.8724,
+      "grasp_frame": 39,
+      "window": [
+        0,
+        60
+      ],
+      "duration_s": 3.0,
+      "coverage_mean": 0.9191,
+      "coverage_min": 0.771,
+      "sharpness_mean": 483.9,
+      "near_black_frames": 0,
+      "rest_noise_p95_m": 0.00362,
+      "peak_displacement_m": 0.1103
+    },
+    {
+      "clip": "demo_2",
+      "score": 0.7631,
+      "grasp_frame": 20,
+      "window": [
+        0,
+        41
+      ],
+      "duration_s": 2.05,
+      "coverage_mean": 0.849,
+      "coverage_min": 0.752,
+      "sharpness_mean": 315.1,
+      "near_black_frames": 0,
+      "rest_noise_p95_m": 0.00019,
+      "peak_displacement_m": 0.4124
+    }
+  ]
+}
