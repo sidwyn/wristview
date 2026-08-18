@@ -181,4 +181,10 @@ def object_pose_on_plane(
         "mask_pixels": int(len(ys)),
         "centroid_px": [round(float(v), 2) for v in centroid_px],
         "height_above_plane_m": round(float(centre @ normal - offset), 5),
+        # The world-frame ray through the silhouette centroid. It points at the
+        # object whether the object is resting or carried, so it is the part of
+        # this solve that survives the object leaving the plane. `carry` uses it
+        # to place the object along the ray once the hand picks it up.
+        "ray_world": direction,
+        "camera_position": origin,
     }

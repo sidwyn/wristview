@@ -87,3 +87,61 @@ a right answer known from a ruler.
 is tracked and a desk plane exists. Fail loudly. This belongs with the other
 gates in `qc.py`, and it is the gate whose absence cost real04 its grasp
 detection.
+
+---
+
+## Session 6: the plane solve pins the object to the desk
+
+Measured on real06b clip 5, 17 August:
+
+| quantity | value |
+|---|---|
+| tracked object height above desk | 2.000 cm on **all 185** valid frames |
+| spread of that height | **0.0000 mm** |
+| operator wrist height above desk | 4.9 cm min, 10.5 cm median, **24.7 cm max** |
+| fingertip-to-object gap | 13.8 cm median, 3 frames under 3 cm |
+| grasp detection | **0 of 186 frames** |
+
+`object_pose_on_plane` sets `centre_offset = offset + height_m / 2` and
+intersects the silhouette ray with that plane. The height above the desk is
+therefore a constant of the method, not a measurement. The object cannot rise,
+so once the hand lifts it the tracked pose stays behind on the table and the
+fingertip gap grows to the lift height. The 13.8 cm median gap **is** the median
+lift height.
+
+This is correct before contact, which is why the pre-contact rest check reads
+3.27 cm, and wrong for every frame of the carry, which is the part a
+manipulation dataset exists to record.
+
+### The proposed gate would not have caught it
+
+The verification table above lists "object centre above the desk, at rest:
+within 5 mm of half the measured object height". That gate passes on **every
+frame of this defect**, at zero error, because the method computes the quantity
+the gate checks. A gate that restates its subject's own construction measures
+nothing. The gate that works asks the opposite question: does the tracked height
+ever *change*? Here it did not change at all, to 4 decimal places in
+millimetres, and that is the signature.
+
+### The fix
+
+`src/wristview/carry.py`, tested in `tests/test_carry.py`.
+
+The silhouette ray is correct throughout: it points at the object whether the
+object rests or is carried. Only the distance along it is wrong once the object
+lifts. On the desk, the plane fixes that distance. In the hand, the hand fixes
+it. Neither branch estimates depth.
+
+- **Resting pose** from frames where the hand is more than 15 cm clear.
+- **Contact onset** where the fingertips reach that resting position. Decided
+  against the resting pose, which is the one pose known to be right, and that is
+  what breaks the circularity between contact and carry.
+- **Carry** by the rigid hand-to-object transform recorded at onset, with the
+  centre placed at the point on the silhouette ray nearest the hand's prediction.
+- **Release** by disagreement, not distance. While the object is held, the ray
+  and the hand agree. When it is set down and the hand withdraws, they diverge.
+
+A first draft decided release the same way as onset, by distance to the resting
+position. That reports release two frames into every pick-up, because a carried
+object is by definition no longer where it was resting. The test suite caught it
+rather than the pipeline.
