@@ -18,6 +18,7 @@ import pytest
 
 from wristview.backends import hands as hand_backend
 from wristview.camera import Intrinsics
+from wristview.reprojection import MAX_HAND_REPROJECTION_PX
 
 
 def _find_frames_dir() -> Path:
@@ -183,3 +184,87 @@ def test_grasp_width_separates_open_from_wrapped(results):
     )
     # And the gap has to be big enough for a threshold to sit inside it.
     assert np.median(open_widths) - np.median(wrapped_widths) > 0.02
+
+
+@pytest.fixture(scope="module")
+def calibrated_results(estimator) -> dict:
+    """The same frames, lifted with a focal length that is not a guess.
+
+    The module fixture uses fx=1836, which is Stage 0's prior for this capture.
+    Stage 1 refined the same camera to 2819, a factor of 1.5, and s03_estimate
+    records that lifting the hand with the prior put it about 20 cm below the
+    desk. Depth scales with focal length, so a reprojection check fed the prior
+    is measuring the prior.
+
+    Worth stating plainly: at 2819 these stills reproject to about 22 px, and
+    the figure keeps falling as the focal is raised further, to about 15 px at
+    4000. So a3 has no calibrated ground truth and this is a coarse check here.
+    It is a tight one on real06, where the camera is refined and the same code
+    measures 13 to 16 px.
+    """
+    out = {}
+    intrinsics = Intrinsics(
+        width=2160, height=1214, fx=2819.0, fy=2819.0, cx=1080.0, cy=607.0
+    )
+    for name in CONTROL + CONTACT:
+        path = FRAMES_DIR / f"{name}.jpg"
+        if path.exists():
+            out[name] = (estimator.process(cv2.imread(str(path)), intrinsics), intrinsics)
+    return out
+
+
+def test_the_3d_hand_reprojects_onto_its_own_2d_detection(calibrated_results):
+    """The check that was missing while grasp silently failed on every session.
+
+    `test_landmarks_project_near_the_frame` above reads `landmarks_px`, which
+    comes straight from WiLoR and was always right. Nothing compared it against
+    `landmarks_cam`, the 3D estimate everything downstream actually uses, so a
+    3D hand sitting metres from where the 2D hand plainly was raised no failure
+    anywhere.
+
+    Until 17 August the translation was rescaled onto our intrinsics by scaling
+    all three components. Uniform scaling leaves X/Z alone while the focal
+    changes, and the projected offset is `f * X/Z`, so the hand collapsed
+    toward the optical axis by the focal ratio, about 25x on session 6. The
+    wrist swept 2221 px across the image while its 3D position accounted for
+    94, reprojection missed by a median of 614 px, and the whole hand lived in
+    a 2.6 x 1.8 x 16.9 cm box. Grasp detection had never worked on any session
+    and this is why.
+
+    Reprojection is the cheapest possible statement of the thing that matters:
+    the 3D hand has to be where the 2D hand is.
+    """
+    worst = []
+    for name, (frame, intrinsics) in calibrated_results.items():
+        if not frame.detected:
+            continue
+        cam = frame.landmarks_cam
+        ahead = cam[:, 2] > 1e-6
+        assert ahead.all(), f"{name}: {int((~ahead).sum())} landmarks behind the camera"
+
+        u = intrinsics.fx * cam[:, 0] / cam[:, 2] + intrinsics.cx
+        v = intrinsics.fy * cam[:, 1] / cam[:, 2] + intrinsics.cy
+        error = np.hypot(u - frame.landmarks_px[:, 0], v - frame.landmarks_px[:, 1])
+        worst.append((name, float(np.median(error))))
+
+    assert worst, "no frames were estimated, so nothing was checked"
+
+    # Compared the same way the production gate compares it, on the median
+    # across frames rather than frame by frame. Two of these stills are
+    # pre-grasp frames where the hand runs off the left edge, which the test
+    # above already documents as legitimate; a partial hand gets a poor crop
+    # and reprojects worse, and holding every individual frame to the gate's
+    # bound would be testing the fixture's framing rather than the lift.
+    values = np.array([value for _, value in worst])
+    median = float(np.median(values))
+    assert median <= MAX_HAND_REPROJECTION_PX, (
+        f"median reprojection {median:.0f} px exceeds "
+        f"{MAX_HAND_REPROJECTION_PX} px: "
+        + ", ".join(f"{name} off by {value:.0f} px" for name, value in worst)
+    )
+
+    # And nothing may be catastrophically wrong even on the worst frame. The
+    # defect this test exists for measured 614 px; the worst uncalibrated
+    # partial-hand frame here measures under 100.
+    name, value = max(worst, key=lambda pair: pair[1])
+    assert value < 150.0, f"{name} reprojects {value:.0f} px away"

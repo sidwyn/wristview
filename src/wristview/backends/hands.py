@@ -20,7 +20,7 @@ object, so it runs only when WiLoR is unavailable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -53,6 +53,16 @@ class HandFrame:
     landmarks_cam: np.ndarray     # (21, 3) metres, camera frame
     confidence: float
     handedness: str
+    # How many hands the detector found in this frame, before one was chosen.
+    # The identity guard needs this: a label that flips while only one hand is
+    # present is the detector mislabelling one hand, not the selector crossing
+    # between two.
+    hands_in_frame: int = 0
+    # Why this hand was chosen: "largest" (box area), "label" (handedness
+    # matched the configured side), "ambiguous" (two detections claimed the
+    # wanted label, so neither can be trusted), "absent" (the wanted hand was
+    # not detected), or "" for no detection at all.
+    selection: str = ""
 
 
 def hamer_available() -> tuple[bool, str]:
@@ -95,7 +105,11 @@ class WiLoRHands:
     inherits the error.
     """
 
-    def __init__(self, device: str = "mps", dtype=None):
+    def __init__(self, device: str = "mps", dtype=None, select: str = "largest"):
+        if select not in ("largest", "Left", "Right"):
+            raise ValueError(f"select must be largest, Left or Right, got {select!r}")
+        self.select = select
+
         from . import mano_compat
 
         mano_compat.apply()
@@ -140,24 +154,77 @@ class WiLoRHands:
         if not detections:
             return empty
 
-        # The manipulating hand is the one with the largest box. A second hand
-        # steadying the scene, which C005 has, is smaller and further away.
-        best = max(
-            detections,
-            key=lambda d: (d["hand_bbox"][2] - d["hand_bbox"][0])
-            * (d["hand_bbox"][3] - d["hand_bbox"][1]),
-        )
+        def side(detection) -> str:
+            return "Right" if float(detection.get("is_right", 1.0)) > 0.5 else "Left"
+
+        if self.select == "largest":
+            # The manipulating hand is the one with the largest box. A second
+            # hand steadying the scene, which C005 has, is smaller and further
+            # away. This fails outright when both hands act at once: the nearer
+            # hand is the larger one, so the selection crosses between them.
+            best = max(
+                detections,
+                key=lambda d: (d["hand_bbox"][2] - d["hand_bbox"][0])
+                * (d["hand_bbox"][3] - d["hand_bbox"][1]),
+            )
+            selection = "largest"
+        else:
+            # Select by label. Size does not enter into it, so a two-handed
+            # clip yields one hand throughout as long as the label is right.
+            matches = [d for d in detections if side(d) == self.select]
+            if len(matches) != 1:
+                # Either the wanted hand was not detected, or two detections
+                # claim the same label and one of them is wrong. Nothing here
+                # says which, so the frame is a gap for interpolation to fill.
+                # Guessing would put the other hand into the trajectory, which
+                # is the exact defect selecting by label is meant to remove.
+                return replace(
+                    empty,
+                    hands_in_frame=len(detections),
+                    selection="ambiguous" if matches else "absent",
+                )
+            best = matches[0]
+            selection = "label"
         preds = best["wilor_preds"]
 
         joints = np.asarray(preds["pred_keypoints_3d"][0], dtype=np.float64)
         translation = np.asarray(preds["pred_cam_t_full"][0], dtype=np.float64)
         pixels = np.asarray(preds["pred_keypoints_2d"][0], dtype=np.float64)
 
-        # Rescale WiLoR's translation from its own focal length onto ours.
-        # Depth scales with focal length under a fixed projected size.
+        # Move WiLoR's translation from its own camera onto ours.
+        #
+        # WiLoR reports the hand for a camera whose focal length is
+        # `scaled_focal_length`, about 37500 px on a 1920 wide frame, with the
+        # principal point at the image centre. That puts the hand around 12 m
+        # away. Our camera has fx near 1468, so the depth has to come down by
+        # `fx / wilor_focal` to keep the hand its real size: a fixed projected
+        # size means depth scales with focal length.
+        #
+        # Scaling all three components, which this did until 17 August, is
+        # wrong and quietly so. Uniform scaling leaves X/Z alone, and the
+        # projected offset from the principal point is `f * X/Z`, so changing
+        # f shrinks the hand's position toward the optical axis by that same
+        # factor. Measured on session 6: the wrist swept 2221 px across the
+        # image while its 3D position accounted for 94 px, a factor of 24, and
+        # reprojection missed by a median of 614 px. The hand ended up in a
+        # 2.6 x 1.8 x 16.9 cm box for a clip where the operator reached right
+        # across a desk. Every downstream distance inherited that, which is why
+        # grasp detection had never worked on any session.
+        #
+        # So the pixel the hand sits on is preserved explicitly, and only the
+        # depth is rescaled. Going through the pixel rather than copying x and
+        # y also picks up any difference between our principal point and the
+        # image centre WiLoR assumes.
         wilor_focal = float(np.asarray(preds["scaled_focal_length"]))
-        if wilor_focal > 1e-6:
-            translation = translation * (intrinsics.fx / wilor_focal)
+        if wilor_focal > 1e-6 and abs(translation[2]) > 1e-9:
+            u = wilor_focal * translation[0] / translation[2] + image_bgr.shape[1] / 2.0
+            v = wilor_focal * translation[1] / translation[2] + image_bgr.shape[0] / 2.0
+            depth = translation[2] * (intrinsics.fx / wilor_focal)
+            translation = np.array([
+                (u - intrinsics.cx) * depth / intrinsics.fx,
+                (v - intrinsics.cy) * depth / intrinsics.fy,
+                depth,
+            ])
 
         cam = joints + translation[None, :]
         if cam[:, 2].min() < 0.02 or cam[:, 2].max() > 5.0:
@@ -168,7 +235,9 @@ class WiLoRHands:
             landmarks_px=pixels,
             landmarks_cam=cam,
             confidence=1.0,
-            handedness="Right" if float(best.get("is_right", 1.0)) > 0.5 else "Left",
+            handedness=side(best),
+            hands_in_frame=len(detections),
+            selection=selection,
         )
 
 
