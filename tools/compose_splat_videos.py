@@ -40,6 +40,14 @@ def main() -> int:
     parser.add_argument("--wrist", required=True, help="folder of <clip>.mp4 from the box")
     parser.add_argument("--out", default="deliverables/wrist-gsplat")
     parser.add_argument("--fps", type=float, default=20.0)
+    parser.add_argument("--gaussians", type=int, default=0,
+                        help="Gaussian count for the caption. Hardcoding it "
+                             "labelled a 2.73 M splat as 1.53 M, which is "
+                             "real03's number.")
+    parser.add_argument("--no-captions", action="store_true",
+                        help="Write the bare side-by-side with no overlay. The "
+                             "captioned version is the one to read numbers off; "
+                             "this one is for showing the result.")
     args = parser.parse_args()
 
     setup(None, verbose=False)
@@ -48,6 +56,10 @@ def main() -> int:
     out_dir = Path(args.out).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    label_text = (
+        f"RENDERED  wrist camera, {args.gaussians / 1e6:.2f} M Gaussian splat"
+        if args.gaussians else "RENDERED  wrist camera, Gaussian splat"
+    )
     manifest = read_json(root / "00_ingest" / "manifest.json")["clips"]
     box_report = json.loads((wrist_dir / "report.json").read_text())
     report = {}
@@ -95,15 +107,20 @@ def main() -> int:
             else:
                 hand_line = ("hand LOST, pose held", (120, 160, 255))
 
-            label(left, [("SOURCE  egocentric camera", (255, 255, 255))])
-            label(right, [
-                ("RENDERED  wrist camera, 1.53 M Gaussian splat", (255, 255, 255)),
-                (f"scene coverage {coverage * 100:.0f}%", (180, 220, 180)),
-                hand_line,
-                (f"gripper proxy {'CLOSED' if closed[index] else 'open'} "
-                 f"{widths[index] * 100:.1f} cm", (200, 200, 255)),
-                object_caption,
-            ])
+            # The captions state what is measured and what is not, so they
+            # belong on anything shown to an engineer. A clean pair is for
+            # showing the result itself, where the overlay is the loudest thing
+            # on screen and says nothing a viewer is asking at that moment.
+            if not args.no_captions:
+                label(left, [("SOURCE  egocentric camera", (255, 255, 255))])
+                label(right, [
+                    (label_text, (255, 255, 255)),
+                    (f"scene coverage {coverage * 100:.0f}%", (180, 220, 180)),
+                    hand_line,
+                    (f"gripper proxy {'CLOSED' if closed[index] else 'open'} "
+                     f"{widths[index] * 100:.1f} cm", (200, 200, 255)),
+                    object_caption,
+                ])
 
             pair = np.hstack([left, np.full((PANEL_H, 4, 3), 40, np.uint8), right])
             if writer is None:

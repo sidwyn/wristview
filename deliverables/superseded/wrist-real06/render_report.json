@@ -1,0 +1,22 @@
+{
+  "demo_0": {
+    "frames": 338,
+    "splat_coverage": 0.93,
+    "carried_frames": 0
+  },
+  "demo_1": {
+    "frames": 238,
+    "splat_coverage": 0.81,
+    "carried_frames": 0
+  },
+  "demo_2": {
+    "frames": 239,
+    "splat_coverage": 0.85,
+    "carried_frames": 0
+  },
+  "demo_3": {
+    "frames": 186,
+    "splat_coverage": 0.95,
+    "carried_frames": 0
+  }
+}

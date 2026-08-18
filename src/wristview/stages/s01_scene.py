@@ -642,7 +642,10 @@ def run(ctx: RunContext) -> dict:
         from ..qc import reconstruction_gates
 
         for gate in reconstruction_gates(
-            rec.metrics,
+            {
+                "registration_rate": registration_rate,
+                "mean_reprojection_error_px": mean_reproj,
+            },
             float(cfg.get("min_registration_rate", 0.8)),
             float(cfg.get("max_reproj_error_px", 1.5)),
         ):

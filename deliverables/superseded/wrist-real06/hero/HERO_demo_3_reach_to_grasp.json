@@ -1,0 +1,31 @@
+{
+  "run": "/private/tmp/claude-501/-Users-sidwyn-Documents-Documents-Personal-Projects-atlas/4c7d9149-910a-457c-9850-0c4d7292cfb6/scratchpad/runs/real06b",
+  "hero": "demo_3",
+  "window": {
+    "start_frame": 0,
+    "end_frame": 36,
+    "fps": 20.0,
+    "duration_s": 1.8,
+    "grasp_frame": 15,
+    "reach_frame": null,
+    "at_target_length": false
+  },
+  "ranking": [
+    {
+      "clip": "demo_3",
+      "score": 0.9295,
+      "grasp_frame": 15,
+      "window": [
+        0,
+        36
+      ],
+      "duration_s": 1.8,
+      "coverage_mean": 0.9701,
+      "coverage_min": 0.7548,
+      "sharpness_mean": 39.8,
+      "near_black_frames": 10,
+      "rest_noise_p95_m": 0.00406,
+      "peak_displacement_m": 0.433
+    }
+  ]
+}

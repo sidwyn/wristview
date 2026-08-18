@@ -62,12 +62,19 @@ the illusion breaks.
 
 ## What is approximated, and what is wrong
 
-**The cube renders wherever the scan put it.** It is not composited at its
-tracked pose. So it is correct until the moment it is picked up, and wrong for
-the whole of the transport, sitting on the desk while the real one is in the
-operator's hand. This is deliberate for this render: the tracked object pose is
-not trustworthy yet, and a wrong object placed confidently is worse than an
-object that visibly stays put. See `OBJECT-POSE-FIX.md`.
+**There is no object layer in these renders at all.** An earlier version of
+this file said the cube was rendered at its scan position rather than its
+tracked one, which described a choice that was never made. `01_scene/object.ply`
+does not exist for this run, so the renderer's object branch never ran:
+`render_report.json` records `object_points: 0` and `grasp_onset_frame: null`
+for all three clips.
+
+The cube is visible only because its points are baked flat into the scene point
+cloud, at the position the scan found it. The effect on screen is the same, and
+so is the consequence: the cube is right until the moment it is picked up, then
+wrong for the whole of the transport while the real one is in the operator's
+hand. But the mechanism is an absence, not a decision, and the two should not
+be confused. See `OBJECT-POSE-FIX.md` for why the tracked pose was not used.
 
 **Scene coverage is 50 to 51 per cent over the full clips**, 70 per cent in the
 hero window. The black regions are space the scan never modelled, mostly above
