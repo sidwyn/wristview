@@ -96,6 +96,46 @@ of frames registered while doing it.
 **Close-pass fraction by session:** 0 percent failed, 37 percent was marginal,
 60 percent passed comfortably. Aim for 60 percent.
 
+### Session 6 measured, and it did not obey any of this
+
+The three phases above were written after session 3. Session 6 was shot without
+them and nothing in the pipeline noticed, because every existing gate measures
+the scan against itself.
+
+```
+max baseline between any two scan views     2.96 cm
+total camera path, 327 frames               18.5 cm
+height above the desk                       41.1 to 43.9 cm   (a 2.7 cm band)
+baseline over subject distance              0.069             (an orbit is ~1.0)
+view direction spread                       39.7 deg
+```
+
+The entire scan was taken from inside a 3 cm ball. It is a rotation, not an
+orbit, and a rotation has no parallax, so nothing in it constrains depth. The
+reconstruction still reported **327 of 327 registered at 1.3565 px** and the
+splat still reached **30.21 dB**, because both of those measure the scan
+against its own views, and all 327 of those views are effectively one viewpoint.
+
+Against that, the wrist camera rendered from:
+
+```
+wrist camera height above the desk          19.8 to 38.5 cm
+distance to the nearest scan view, median   24 to 44 cm depending on the clip
+rendered frames below the lowest scan view  100 per cent, on all four clips
+```
+
+Every frame of every delivered video is a novel view about 40 cm from anything
+the splat was ever shown. That is the floaters, and that is the wash.
+
+**This is now gated.** Stage 1 reports `scan_geometry` and fails loudly on a
+baseline under 30 cm or a height band under 15 cm. Stage 5 refuses to render
+when the median frame sits more than 15 cm from the nearest scan view, or when
+more than 10 per cent of frames fall below the scan floor, unless
+`render.allow_extrapolation` is set. Note that the old Stage 5 coverage warning
+did not catch this: it reads the splat's alpha, which was 87 to 94 per cent
+throughout. Alpha says a Gaussian was drawn there. It does not say a camera was
+ever there to constrain it.
+
 ### Phase 3 · contact pass, about 6 seconds
 
 Hold the camera **10 to 15 cm from the work surface** and sweep the small area

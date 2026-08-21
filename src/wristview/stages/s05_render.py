@@ -226,6 +226,53 @@ def _render_episode(
         )
         log.warning("%s: %s", clip_id, status["warning"])
 
+    # ---- did the scan ever see these viewpoints -------------------------
+    #
+    # The coverage warning above reads the splat's alpha, which is not the same
+    # question and can be reassuring while the render is worthless: session 6
+    # filled 87 to 94 per cent of every frame from viewpoints 24 to 44 cm away
+    # from anything that ever saw the scene, and 100 per cent of its frames sat
+    # below the scan's lowest view. Alpha says a Gaussian was drawn there. It
+    # does not say a camera was ever there to constrain it.
+    scale_path = ctx.stage_dir(1, create=False) / "scale.json"
+    cameras_path = ctx.stage_dir(1, create=False) / "cameras.json"
+    if scale_path.exists() and cameras_path.exists():
+        plane = (read_json(scale_path).get("diagnostics") or {}).get("desk_plane")
+        frames = read_json(cameras_path).get("frames") or []
+        if plane and plane.get("offset_m") is not None and frames:
+            from .. import coverage as coverage_module
+
+            scan_centres = np.array([
+                np.asarray(f["pose_world_from_cam"])[:3, 3] for f in frames
+            ])
+            eyes = np.array([(ee_poses[i] @ offset)[:3, 3] for i in range(count)])
+            report = coverage_module.render_viewpoint_coverage(
+                scan_centres, eyes,
+                np.asarray(plane["normal"], dtype=float), float(plane["offset_m"]),
+            )
+            status["viewpoint_coverage"] = report
+            log.info(
+                "%s: nearest scan view, median %.1f cm, p90 %.1f cm; %.0f%% of "
+                "frames below the scan floor at %.1f cm",
+                clip_id, report["nearest_scan_view_median_m"] * 100,
+                report["nearest_scan_view_p90_m"] * 100,
+                report["fraction_below_scan_floor"] * 100,
+                report["scan_floor_m"] * 100,
+            )
+            for failure in report.get("failures", []):
+                log.error("%s: VIEWPOINT COVERAGE: %s", clip_id, failure)
+            if report.get("failures") and not bool(
+                (ctx.config.get("render", {}) or {}).get("allow_extrapolation", False)
+            ):
+                raise ValueError(
+                    f"{clip_id}: the wrist camera renders from viewpoints the scan "
+                    f"never covered, so this render is extrapolation rather than "
+                    f"interpolation. "
+                    + "; ".join(report["failures"])
+                    + ". Set render.allow_extrapolation to render anyway, and say "
+                      "so wherever the video is shown."
+                )
+
     write_json(out_dir / "status.json", status)
     log.info(
         "%s: %d wrist frames at %dx%d, splat coverage %.0f%%, preview %s",

@@ -787,6 +787,46 @@ def run(ctx: RunContext) -> dict:
             "diagnostics": diagnostics,
         }
         scale_path = write_json(out_dir / "scale.json", scale_payload)
+
+        # ---- can this scan constrain geometry at all ----------------------
+        #
+        # Registration rate and reprojection error both measure the scan
+        # against itself. A capture taken from a single spot scores perfectly
+        # on both while carrying no depth information at all: session 6
+        # registered 327 of 327 at 1.3565 px from a 2.96 cm baseline at 43 cm,
+        # then rendered every wrist frame from below its lowest view. Reported
+        # here, where a reshoot is still cheap.
+        plane = diagnostics.get("desk_plane")
+        if plane and plane.get("offset_m") is not None and len(metric_poses) >= 2:
+            from .. import coverage as coverage_module
+
+            centres = np.array([pose[:3, 3] for pose in metric_poses.values()])
+            directions = np.array([
+                pose[:3, :3] @ np.array([0.0, 0.0, 1.0])
+                for pose in metric_poses.values()
+            ])
+            scan_report = coverage_module.scan_geometry(
+                centres, np.asarray(plane["normal"], dtype=float),
+                float(plane["offset_m"]), view_directions=directions,
+            )
+            rec.metric("scan_geometry", scan_report)
+            log.info(
+                "scan geometry: %d views, baseline %.1f cm, height band %.1f cm, "
+                "baseline over subject distance %.3f",
+                scan_report["views"], scan_report["max_baseline_m"] * 100,
+                scan_report["height_span_m"] * 100,
+                scan_report.get("baseline_over_distance", float("nan")),
+            )
+            for failure in scan_report.get("failures", []):
+                log.error("SCAN GEOMETRY: %s", failure)
+                rec.note(f"scan geometry: {failure}")
+            if scan_report.get("failures"):
+                log.error(
+                    "This scan cannot support a wrist render. Localization may "
+                    "still succeed and the splat may still score well on the "
+                    "scan's own views; both measure the scan against itself. "
+                    "See CAPTURE-SOP.md phase 3."
+                )
         rec.output("scale", scale_path)
         rec.metric("scale_factor", float(scale))
 
