@@ -28,6 +28,9 @@ def main() -> int:
     parser.add_argument("--run", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--images", action="store_true", default=True)
+    parser.add_argument("--splat-only", action="store_true",
+                        help="ship only what splat training reads: the COLMAP "
+                             "model and the scan images. Skip the trajectories.")
     args = parser.parse_args()
 
     setup(None, verbose=False)
@@ -57,18 +60,21 @@ def main() -> int:
         log.info("copied %d scan images", len(scan["frame_names"]))
 
     # Wrist trajectories, so the remote box can render without this repo.
-    traj_out = out / "trajectories"
-    traj_out.mkdir(parents=True, exist_ok=True)
-    retarget = read_json(run_root / "04_retarget" / "summary.json")
+    # `--splat-only` drops them. Training never reads them, and a GPU pod
+    # that only trains has no use for a retarget result.
     exported = []
-    for clip_id, entry in retarget.items():
-        if entry.get("rejected"):
-            continue
-        source = run_root / "04_retarget" / clip_id / "ee_trajectory.npz"
-        if source.exists():
-            shutil.copy2(source, traj_out / f"{clip_id}.npz")
-            exported.append(clip_id)
-    log.info("copied %d trajectories", len(exported))
+    if not args.splat_only:
+        traj_out = out / "trajectories"
+        traj_out.mkdir(parents=True, exist_ok=True)
+        retarget = read_json(run_root / "04_retarget" / "summary.json")
+        for clip_id, entry in retarget.items():
+            if entry.get("rejected"):
+                continue
+            source = run_root / "04_retarget" / clip_id / "ee_trajectory.npz"
+            if source.exists():
+                shutil.copy2(source, traj_out / f"{clip_id}.npz")
+                exported.append(clip_id)
+        log.info("copied %d trajectories", len(exported))
 
     scale = read_json(run_root / "01_scene" / "scale.json")
     config = (run_root / "config.yaml").read_text()

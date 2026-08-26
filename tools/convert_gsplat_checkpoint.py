@@ -20,8 +20,9 @@ the band count: 16 bands is degree 3.
 
 Both use wxyz quaternions and the same SH basis, so nothing is reordered.
 
-Verify the result rather than trusting it. `--check` re-renders one training
-view and prints PSNR; a mismatched activation shows up there immediately.
+Verify the result rather than trusting it. Run `tools/check_splat.py` on the
+converted file. It renders registered scan poses and compares them against the
+photographs, so a mismatched activation shows up as a PSNR collapse.
 """
 
 from __future__ import annotations

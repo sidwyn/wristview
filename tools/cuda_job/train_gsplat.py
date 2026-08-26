@@ -192,6 +192,10 @@ def main() -> int:
     parser.add_argument("--sh-degree", type=int, default=3)
     parser.add_argument("--resolution", type=int, default=1600,
                         help="long side used for training images")
+    parser.add_argument("--probe-at", type=int, default=2500,
+                        help="survey PSNR over a spread of training views at "
+                             "this step, so a short run reports whether the "
+                             "long one is worth starting")
     parser.add_argument("--render-only", action="store_true")
     parser.add_argument("--ssim-weight", type=float, default=0.2,
                         help="weight of the structural term, 0 for pure L1")
@@ -280,11 +284,24 @@ def main() -> int:
     )
 
     # --- training images -------------------------------------------------
+    # Match by stem, not by full name. The undistorted copies may be PNG while
+    # the reconstruction records the original JPEG names.
+    on_disk = {p.stem: p for p in sorted(image_dir.iterdir()) if p.is_file()}
+
     cache = []
     for view in views:
-        image = cv2.imread(str(image_dir / view["name"]))
+        path = image_dir / view["name"]
+        if not path.exists():
+            path = on_disk.get(Path(view["name"]).stem)
+        image = cv2.imread(str(path)) if path else None
         if image is None:
-            continue
+            # This used to `continue`. A wrong image directory then trained on
+            # zero views and reported nothing. Refuse instead.
+            raise FileNotFoundError(
+                f"the reconstruction registers {view['name']} but {image_dir} "
+                f"holds no readable image with that name or stem. It holds "
+                f"{len(on_disk)} files."
+            )
         scale = min(1.0, args.resolution / max(image.shape[1], image.shape[0]))
         width = int(round(image.shape[1] * scale))
         height = int(round(image.shape[0] * scale))
@@ -319,6 +336,23 @@ def main() -> int:
     if not args.render_only:
         rng = np.random.default_rng(0)
         peak = 0.0
+        def survey(sample: int = 12) -> list[float]:
+            """Return PSNR over evenly spaced cached views, in dB.
+
+            The per-step PSNR printed below comes from the single view that
+            step happened to draw, so it swings by several dB on its own. This
+            samples a fixed spread instead, which is the number that can be
+            compared against a target.
+            """
+            picks = np.linspace(0, len(cache) - 1, min(sample, len(cache))).astype(int)
+            scores = []
+            with torch.no_grad():
+                for index in sorted(set(int(i) for i in picks)):
+                    drawn, _, _ = render(cache[index], sh_degree)
+                    mse = float(((drawn - cache[index]["rgb"]) ** 2).mean())
+                    scores.append(-10 * math.log10(max(mse, 1e-10)))
+            return scores
+
         seed_count = len(params["means"])
         growth_checked = False
         for step in range(1, args.iterations + 1):
@@ -363,6 +397,43 @@ def main() -> int:
                 print(f"  densification confirmed: {seed_count} -> {len(params['means'])} "
                       f"Gaussians by step {step}", flush=True)
 
+            # Report quality early, so a probe run says whether the long run is
+            # worth starting. Waiting for step 30000 to find out costs 40
+            # minutes of rented GPU.
+            if step in (args.probe_at, args.iterations):
+                scores = survey()
+                scores.sort()
+                middle = scores[len(scores) // 2]
+                print(
+                    f"  SURVEY at step {step}: median {middle:.2f} dB over "
+                    f"{len(scores)} views, worst {scores[0]:.2f} dB, best "
+                    f"{scores[-1]:.2f} dB, {len(params['means'])} Gaussians",
+                    flush=True,
+                )
+                if step == args.probe_at:
+                    # Reference points, not a threshold. The first is measured
+                    # on this repo's own splats; the second is the target the
+                    # gate applies to the finished splat.
+                    print(
+                        "  reference: the cuda_job README records 20 dB or "
+                        "better by step 3000 on an earlier capture. The gate "
+                        "on the finished splat needs 25 dB.",
+                        flush=True,
+                    )
+                    if middle < 15.0:
+                        print(
+                            "  ON TRACK: NO. Under 15 dB this late is the "
+                            "failure mode this probe exists to catch. Stop and "
+                            "look before starting the long run.",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"  ON TRACK: {middle:.2f} dB at step {step}. "
+                            "Judge against the reference above.",
+                            flush=True,
+                        )
+
             if step % 1000 == 0:
                 peak = max(peak, torch.cuda.max_memory_allocated() / 2**30)
                 with torch.no_grad():
@@ -380,6 +451,9 @@ def main() -> int:
 
     # --- render the wrist trajectories ------------------------------------
     traj_dir = data / "trajectories"
+    if not traj_dir.is_dir():
+        print("no trajectories/ in the payload, so nothing to render. Training done.")
+        return 0
     for path in sorted(traj_dir.glob("*.npz")):
         traj = np.load(path)
         poses = traj["poses_video_rate"]
