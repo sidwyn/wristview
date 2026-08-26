@@ -35,7 +35,12 @@ from .logging_setup import get
 # drift, and a preflight that disagrees with the gate it predicts is worse
 # than no preflight: an inflated ceiling in the Stage 2 copy failed a clip the
 # standalone tool had passed.
-from .qc import PREFLIGHT_PASS_MATCHES, PREFLIGHT_WARN_MATCHES
+from .qc import (
+    PREFLIGHT_MAX_WEAK_FRACTION,
+    PREFLIGHT_MAX_WEAK_RUN_S,
+    PREFLIGHT_PASS_MATCHES,
+    PREFLIGHT_WARN_MATCHES,
+)
 from .qc import PREFLIGHT_PASS_RATIO as PASS_RATIO
 from .qc import PREFLIGHT_WARN_RATIO as WARN_RATIO
 from .videoio import extract_frames, probe
@@ -54,6 +59,14 @@ class PreflightResult:
     per_demo_best: list[int]
     baseline_px: float = float("nan")
     reference_pairs_used: int = 0
+    # Worst-case statistics. The median hides a minority of failing frames.
+    # Session real25 passed on a median of 389 matches. Stage 2 then registered
+    # 73.4 per cent of the clip. Two runs of frames failed at the two ends. A
+    # median over 6 samples cannot express that failure.
+    weak_fraction: float = 0.0
+    longest_weak_run_s: float = 0.0
+    longest_weak_run_frames: int = 0
+    sample_interval_s: float = 0.0
 
     @property
     def passed(self) -> bool:
@@ -72,7 +85,7 @@ def run_preflight(
     demo_video: Path,
     device: str,
     scan_frames: int = 30,
-    demo_frames: int = 6,
+    demo_frames: int = 24,
     max_keypoints: int = 1024,
     workdir: Path | None = None,
 ) -> PreflightResult:
@@ -177,11 +190,35 @@ def run_preflight(
         demo = float(np.median(per_demo_best)) if per_demo_best else 0.0
         ratio = demo / reference if reference > 0 else 0.0
 
-        # Both must hold. A good ratio against a poor scan is not a good
-        # capture, and a high count says nothing without knowing the ceiling.
-        if ratio >= PASS_RATIO and demo >= PREFLIGHT_PASS_MATCHES:
+        # Measure the worst case, not only the middle of the distribution.
+        #
+        # Count the frames below the warn bar. Then find the longest run of
+        # consecutive weak frames. Stage 2 fails on a run, not on an average: a
+        # run of weak frames gives no pose for that part of the clip, and the
+        # frames that do register there return wrong poses.
+        counts = np.asarray(per_demo_best, dtype=float)
+        weak = counts < PREFLIGHT_WARN_MATCHES
+        weak_fraction = float(weak.mean()) if len(weak) else 0.0
+        longest = run = 0
+        for flag in weak:
+            run = run + 1 if flag else 0
+            longest = max(longest, run)
+        interval = (
+            float(demo_info.duration_s) / max(len(counts), 1) if len(counts) else 0.0
+        )
+
+        # Every test must hold. A good ratio against a poor scan is not a good
+        # capture. A high count says nothing without the ceiling. A good median
+        # says nothing when a quarter of the clip is unusable.
+        strong_enough = ratio >= PASS_RATIO and demo >= PREFLIGHT_PASS_MATCHES
+        warn_enough = ratio >= WARN_RATIO and demo >= PREFLIGHT_WARN_MATCHES
+        worst_case_ok = (
+            weak_fraction <= PREFLIGHT_MAX_WEAK_FRACTION
+            and longest * interval <= PREFLIGHT_MAX_WEAK_RUN_S
+        )
+        if strong_enough and worst_case_ok:
             verdict = "PASS"
-        elif ratio >= WARN_RATIO and demo >= PREFLIGHT_WARN_MATCHES:
+        elif warn_enough and worst_case_ok:
             verdict = "MARGINAL"
         else:
             verdict = "FAIL"
@@ -196,6 +233,10 @@ def run_preflight(
             per_demo_best=per_demo_best,
             baseline_px=baseline_px,
             reference_pairs_used=len(reference_counts),
+            weak_fraction=weak_fraction,
+            longest_weak_run_s=longest * interval,
+            longest_weak_run_frames=longest,
+            sample_interval_s=interval,
         )
     finally:
         if owned and workdir.exists():

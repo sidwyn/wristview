@@ -279,6 +279,11 @@ def command_preflight(args: argparse.Namespace) -> int:
 
     from .device import resolve as resolve_device
     from .preflight import PASS_RATIO, run_preflight
+    from .qc import (
+        PREFLIGHT_MAX_WEAK_FRACTION,
+        PREFLIGHT_MAX_WEAK_RUN_S,
+        PREFLIGHT_WARN_MATCHES,
+    )
 
     scan = Path(args.scan).resolve()
     demo = Path(args.demo).resolve()
@@ -311,11 +316,28 @@ def command_preflight(args: argparse.Namespace) -> int:
     print(f"demo to scan      {result.demo_matches:6.0f} features   (best scan frame, median over {result.demo_frames} demo frames)")
     print(f"ratio             {result.ratio:6.2f}              (pass needs {PASS_RATIO:.2f})")
     print()
+    print(f"weak frames       {result.weak_fraction * 100:5.1f}%              "
+          f"(below {PREFLIGHT_WARN_MATCHES:.0f} matches; limit {PREFLIGHT_MAX_WEAK_FRACTION * 100:.0f}%)")
+    print(f"longest weak run  {result.longest_weak_run_s:6.2f} s            "
+          f"({result.longest_weak_run_frames} of {result.demo_frames} samples; "
+          f"limit {PREFLIGHT_MAX_WEAK_RUN_S:.1f} s)")
+    print()
     print(f"{result.verdict}")
     if result.verdict != "PASS":
         print()
-        print("The scan does not cover the demo's viewpoint. After the wide orbit,")
-        print("scan the working area again from the demo camera's height and framing.")
+        # Name the test that failed. An earlier version printed one message for
+        # every non-PASS verdict. It told the operator to rescan the workspace
+        # when the ratio had in fact passed at three times the limit.
+        if result.ratio < PASS_RATIO:
+            print("The scan does not cover the demo's viewpoint. After the wide orbit,")
+            print("scan the working area again from the demo camera's height and framing.")
+        if result.demo_matches < PREFLIGHT_WARN_MATCHES:
+            print("The imagery yields too few features. Slow the camera down and add light.")
+        if result.weak_fraction > PREFLIGHT_MAX_WEAK_FRACTION:
+            print(f"{result.weak_fraction * 100:.0f} per cent of sampled frames are weak. The median hides them.")
+        if result.longest_weak_run_s > PREFLIGHT_MAX_WEAK_RUN_S:
+            print(f"One stretch of {result.longest_weak_run_s:.1f} s cannot localize. Stage 2 will")
+            print("reject the clip, or return wrong poses for that stretch.")
     return 0 if result.passed else 1
 
 
@@ -410,7 +432,10 @@ def build_parser() -> argparse.ArgumentParser:
     pre_parser.add_argument("--scan", required=True, help="room or workspace scan video")
     pre_parser.add_argument("--demo", required=True, help="one demo clip")
     pre_parser.add_argument("--scan-frames", type=int, default=30)
-    pre_parser.add_argument("--demo-frames", type=int, default=6)
+    # Sample enough frames to resolve a weak run. Six samples over an 18 second
+    # clip give one sample every three seconds. A one second limit cannot then
+    # be measured. Twenty-four samples give 0.75 s of resolution.
+    pre_parser.add_argument("--demo-frames", type=int, default=24)
     pre_parser.add_argument("--max-keypoints", type=int, default=1024)
     pre_parser.add_argument("-v", "--verbose", action="store_true")
     pre_parser.set_defaults(func=command_preflight)

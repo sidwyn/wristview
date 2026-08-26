@@ -168,6 +168,51 @@ def _load_arkit(path: Path | None) -> dict | None:
     }
 
 
+
+
+def _scan_match_counts(scan_dir, scan_names, demo_dir, demo_names, device, samples):
+    """Best scan-match count for each sampled demo frame.
+
+    This measures the question Stage 2 asks: can this frame localize against the
+    scan? Marker visibility cannot answer it. See `workspace` for the numbers
+    that rejected the marker.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from ..backends import sfm
+
+    pick = np.linspace(0, len(demo_names) - 1, min(samples, len(demo_names)))
+    pick = sorted(set(int(v) for v in pick))
+    scan_pick = np.linspace(0, len(scan_names) - 1, min(40, len(scan_names)))
+    scan_pick = sorted(set(int(v) for v in scan_pick))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        work = Path(tmp)
+        demo_features = work / "demo.h5"
+        scan_features = work / "scan.h5"
+        sfm.extract_features(demo_dir, [demo_names[i] for i in pick], demo_features, device, 1024)
+        sfm.extract_features(scan_dir, [scan_names[i] for i in scan_pick], scan_features, device, 1024)
+        pairs = [(demo_names[i], scan_names[j]) for i in pick for j in scan_pick]
+        matches = work / "m.h5"
+        sfm.match_pairs(pairs, demo_features, matches, device, features_ref_path=scan_features)
+
+        import h5py
+
+        best = {}
+        with h5py.File(str(matches), "r") as handle:
+            for a in handle.keys():
+                counts = [
+                    int((np.array(handle[a][b]["matches0"]).ravel() > -1).sum())
+                    for b in handle[a].keys()
+                ]
+                best[a] = max(counts) if counts else 0
+
+    sampled = np.array([best.get(demo_names[i], 0) for i in pick], dtype=float)
+    # Carry each sample forward to the frames around it.
+    return np.interp(np.arange(len(demo_names)), pick, sampled)
+
+
 def run(ctx: RunContext) -> dict:
     """Run Stage 0 over the run directory."""
     rec = StageRecorder(ctx, STAGE, NAME)
@@ -258,6 +303,57 @@ def run(ctx: RunContext) -> dict:
             # convert frame indices into seconds.
             effective_fps = (fps if fps > 0 else info.fps) * (len(names) / max(len(extracted), 1))
 
+            # ---- workspace segment ------------------------------------
+            #
+            # A take holds more than the demonstration. Session real25 opened
+            # and closed with a sync clock on a monitor. Stage 2 rejected that
+            # clip: a few clock frames matched room geometry, returned wrong
+            # poses, and turned a 60 cm camera path into 25.78 m.
+            #
+            # Measure the scan-match count for each frame. Marker visibility
+            # was tried first and cannot separate the two cases. See the
+            # `workspace` module for the numbers.
+            segment = None
+            if clip_id != "scan" and bool(cfg.get("detect_workspace_segment", True)):
+                from ..qc import PREFLIGHT_WARN_MATCHES
+                from ..workspace import detect_workspace_segment, matched_frames
+
+                scan_clip = manifest["clips"].get("scan")
+                if scan_clip is None:
+                    raise ValueError(
+                        f"{clip_id}: the workspace segment needs the scan, and "
+                        f"the scan was not ingested first"
+                    )
+                from ..device import resolve as resolve_device
+
+                device = resolve_device(
+                    ctx.config.get("device.preferred", "auto"),
+                    ctx.config.get("device.allow_cpu_fallback", True),
+                )
+                counts = _scan_match_counts(
+                    ctx.root / scan_clip["frames_dir"], scan_clip["frame_names"],
+                    frames_dir, names, device,
+                    int(cfg.get("workspace_samples", 24)),
+                )
+                try:
+                    lo, hi, segment = detect_workspace_segment(
+                        matched_frames(counts, PREFLIGHT_WARN_MATCHES),
+                        np.asarray(frame_times, dtype=float),
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"{clip_id}: cannot find the workspace segment. {exc}"
+                    ) from exc
+                segment["match_count_median"] = round(float(np.median(counts)), 1)
+                segment["warn_matches"] = float(PREFLIGHT_WARN_MATCHES)
+                log.info(
+                    "%s: workspace segment t=%.2f-%.2fs, %d of %d frames (%.0f%%), "
+                    "median scan matches %.0f",
+                    clip_id, segment["start_s"], segment["end_s"], segment["frames"],
+                    len(names), segment["fraction_of_clip"] * 100,
+                    segment["match_count_median"],
+                )
+
             manifest["clips"][clip_id] = {
                 "kind": "scan" if clip_id == "scan" else "demo",
                 "source_video": str(video_path),
@@ -270,6 +366,7 @@ def run(ctx: RunContext) -> dict:
                 "requested_fps": fps if fps > 0 else info.fps,
                 "effective_fps": round(effective_fps, 4),
                 "quality": stats,
+                "workspace_segment": segment,
             }
             # With no EXIF focal length the guess is only a starting point.
             # Say so, and let Stage 1 hand the camera to COLMAP to refine

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .. import reprojection
 from ..backends import gripper as gripper_backend
 from ..backends import hands as hand_backend
 from ..geometry import (
@@ -35,10 +36,9 @@ from ..geometry import (
     slerp_fill,
     smooth_poses,
 )
-from .. import reprojection
-from ..mount import wrist_camera_offset
 from ..grasp import detect_grasp_by_contact
 from ..logging_setup import get
+from ..mount import wrist_camera_offset
 from ..qc import hand_velocity_gates, hand_velocity_outliers
 from ..runctx import RunContext, StageRecorder, read_json, write_json
 
@@ -129,6 +129,11 @@ def detect_grasp(
             threshold_source = "auto_percentile"
 
     # Motion coupling: is the object travelling with the hand.
+    #
+    # `dt` is the nominal interval. Stage 0 drops blurred frames, so this
+    # understates the real gap where frames were removed. The test compares the
+    # DIRECTION of two velocities, and a shared scale factor cancels in the
+    # cosine, so an uneven interval does not change the verdict here.
     coupled = np.zeros(count, dtype=bool)
     dt = 1.0 / max(fps, 1e-6)
     for index in range(1, count):
@@ -289,7 +294,6 @@ def _retarget_episode(
 
     hand = np.load(estimate_dir / "hand.npz")
     landmarks = hand["landmarks_world"]
-    landmarks_px = hand["landmarks_px"]
     hand_valid = hand["valid"]
 
     # Stage 1's refined camera, not Stage 0's prior. The prior has been wrong
@@ -330,6 +334,10 @@ def _retarget_episode(
     object_positions = object_poses[:, :3, 3]
 
     fps = float(clip.get("effective_fps") or clip["video_info"]["fps"] or 30.0)
+    # Stage 0 drops blurred frames, so kept frames are not evenly spaced in
+    # time. Use the recorded times. A frame index is not a clock.
+    frame_times = clip.get("frame_times_s")
+    frame_times = np.asarray(frame_times, dtype=float) if frame_times else None
 
     if not hand_valid.any():
         status = {
@@ -345,7 +353,48 @@ def _retarget_episode(
     # A wrist cannot turn faster than a wrist can turn. Frames that claim it did
     # are tracking failures, and they have to be found before anything is built
     # on them.
-    velocity = hand_velocity_outliers(landmarks, hand_valid, fps)
+    # Retarget only part of the clip when asked. Check the excluded frames
+    # anyway and report them separately: a trimmed segment must not make a bad
+    # tail disappear.
+    excluded_tail = None
+    frame_range = cfg.get("frame_range")
+    if frame_range:
+        lo, hi = int(frame_range[0]), int(frame_range[1])
+        tail = np.zeros(len(hand_valid), dtype=bool)
+        tail[hi:] = True
+        tail &= hand_valid
+        if tail.sum() >= 3:
+            tail_report = hand_velocity_outliers(
+                landmarks, tail, fps, frame_times_s=frame_times
+            )
+            excluded_tail = {
+                "frames": [hi, int(len(hand_valid))],
+                "frames_checked": tail_report["frames_checked"],
+                "frames_flagged": tail_report["frames_flagged"],
+                "longest_run": tail_report["longest_run"],
+                "max_rate_deg_s": tail_report["max_rate_deg_s"],
+                "flagged_frames": tail_report["flagged_frames"],
+                "gates": [
+                    {"name": g.name, "passed": g.passed, "value": g.value,
+                     "threshold": g.threshold}
+                    for g in hand_velocity_gates(tail_report)
+                ],
+            }
+            log.warning(
+                "%s: EXCLUDED TAIL frames %d-%d checked separately: %d flagged, "
+                "longest run %d, max %.0f deg/s. Not retargeted, not discarded.",
+                clip_id, hi, len(hand_valid), tail_report["frames_flagged"],
+                tail_report["longest_run"], tail_report["max_rate_deg_s"] or 0.0,
+            )
+        keep = np.zeros(len(hand_valid), dtype=bool)
+        keep[lo:hi] = True
+        hand_valid = hand_valid & keep
+        log.info("%s: retargeting frames %d to %d only (%d frames)",
+                 clip_id, lo, hi, int(hand_valid.sum()))
+
+    velocity = hand_velocity_outliers(
+        landmarks, hand_valid, fps, frame_times_s=frame_times
+    )
     velocity_gates = hand_velocity_gates(velocity)
     outlier = velocity.pop("outlier")
     log.info(
@@ -610,6 +659,7 @@ def _retarget_episode(
         "frames_control_rate": len(resampled_poses),
         "duration_s": round(float(times[-1]) if len(times) else 0.0, 3),
         "grasp": grasp_diagnostics,
+        "excluded_tail": excluded_tail,
         "gripper": spec.to_dict(),
         "width_range_m": [round(float(resampled_widths.min()), 4),
                           round(float(resampled_widths.max()), 4)],

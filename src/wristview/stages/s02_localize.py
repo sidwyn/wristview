@@ -37,7 +37,10 @@ STAGE = 2
 NAME = "localize"
 
 
-def _motion_diagnostics(poses: np.ndarray, valid: np.ndarray, fps: float) -> dict | None:
+def _motion_diagnostics(
+    poses: np.ndarray, valid: np.ndarray, fps: float,
+    frame_times_s: np.ndarray | None = None,
+) -> dict | None:
     """Speed and path length implied by a pose sequence.
 
     Used to sanity-check localization against physics rather than against its
@@ -49,10 +52,19 @@ def _motion_diagnostics(poses: np.ndarray, valid: np.ndarray, fps: float) -> dic
     steps = np.linalg.norm(np.diff(centres, axis=0), axis=1)
     if len(steps) == 0:
         return None
+    # Divide by the real interval between kept frames. Stage 0 removes blurred
+    # frames, so a frame index is not a clock. See `qc.hand_velocity_outliers`
+    # for the session where that error rejected a good clip.
+    if frame_times_s is not None:
+        times = np.asarray(frame_times_s, dtype=float)[valid]
+        seconds = np.maximum(np.diff(times), 1e-6)
+    else:
+        seconds = np.full(len(steps), 1.0 / max(fps, 1e-6))
+    speeds = steps / seconds
     return {
         "path_length_m": round(float(steps.sum()), 4),
-        "median_speed_m_s": round(float(np.median(steps) * fps), 4),
-        "max_speed_m_s": round(float(steps.max() * fps), 4),
+        "median_speed_m_s": round(float(np.median(speeds)), 4),
+        "max_speed_m_s": round(float(speeds.max()), 4),
         "centre_spread_m": [round(float(v), 4) for v in np.ptp(centres, axis=0)],
     }
 
@@ -297,7 +309,11 @@ def _localize_episode(
     # 19 m in 7.8 s across a 0.53 m scene, because the demo close-ups share
     # too little with the wide scan. Orientation was stable throughout, so
     # nothing upstream looked wrong.
-    motion = _motion_diagnostics(poses, valid, fps=float(clip.get("effective_fps") or 30.0))
+    _times = clip.get("frame_times_s")
+    motion = _motion_diagnostics(
+        poses, valid, fps=float(clip.get("effective_fps") or 30.0),
+        frame_times_s=np.asarray(_times, dtype=float) if _times else None,
+    )
     max_speed = float(cfg.get("max_camera_speed_m_s", 2.0))
     min_ratio = float(cfg.get("min_inlier_ratio", 0.35))
 

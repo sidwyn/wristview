@@ -276,8 +276,7 @@ def _estimate_episode(
 
     # The work surface, from Stage 1, and the object's measured height. Both
     # are needed to place a resting object without a depth estimate.
-    from .. import carry
-    from .. import reprojection
+    from .. import carry, reprojection
     from .. import plane as plane_module
 
     desk_normal = desk_offset = None

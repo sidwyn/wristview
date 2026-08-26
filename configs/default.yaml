@@ -51,6 +51,21 @@ ingest:
   max_horizontal_fov_deg: 100.0
   # Used only when EXIF and ARKit give nothing. A sane iPhone main-wide guess.
   fallback_focal_ratio: 0.85
+  # Find the part of a demo clip that shows the workspace.
+  #
+  # A take holds more than the demonstration. Session real25 opened and closed
+  # with a sync clock on a monitor. Stage 2 rejected that clip: a few clock
+  # frames registered against room geometry and returned wrong poses, which
+  # turned a 60 cm camera path into 25.78 m.
+  #
+  # The detector measures the scan-match count for each frame. Marker
+  # visibility was tried first and rejected: the hand covered the marker for
+  # 4.25 s in the middle of a manipulation, which is longer than either sync
+  # segment, so no bridge length separates the two cases.
+  #
+  # Detection failure raises an error. It never falls back to the whole clip.
+  detect_workspace_segment: true
+  workspace_samples: 24
 
 scene:
   # `hloc` uses SuperPoint plus LightGlue. `sift` uses pycolmap only.
@@ -72,7 +87,15 @@ scene:
     # arkit, aruco, manual, or none. Tried in this order when set to auto.
     source: auto
     aruco_dict: DICT_4X4_50
-    aruco_marker_length_m: 0.15
+    # REQUIRED. No default. Measure the black square with a tape and pass it.
+    #
+    # A default for a physical quantity fails silently. This key held 0.15 from
+    # the first commit of the project. No marker this project printed was ever
+    # 150 mm. A run that forgot the override produced a reconstruction 1.5x too
+    # large, and every metric number downstream inherited that.
+    #
+    # null makes a forgotten override a loud error instead.
+    aruco_marker_length_m: null
     # Which marker sets the scale. null means the most-detected id. Averaging
     # across ids is never right: a spurious id 17 seen in 8 frames alongside
     # the genuine id 0 in 114 gave a 44 percent scale error.
@@ -175,6 +198,9 @@ localize:
   retrieval_top_k: 10
 
 estimate:
+  # Stop the stage when a 3D quantity does not reproject onto the observation
+  # that produced it. Set false to record the failure and continue.
+  fail_on_reprojection: true
   # Long side, in pixels, for the object and depth path. Rendering splat depth
   # at a demo's native 2160x1214 is 2.6 million pixels a frame and nothing
   # downstream needs it: accuracy there is set by the depth model, not by
@@ -270,6 +296,17 @@ estimate:
     smoothing_window: 5
 
 retarget:
+  # Retarget only part of a clip, as [start, end) frame indices.
+  #
+  # Use it when a take holds motion outside the demonstration. Measure the
+  # boundary from the content, not from where a gate stops complaining: the
+  # grasp detector gives the release frame and the hand detector gives the
+  # entry frame.
+  #
+  # The excluded frames are still checked. Their gate results are reported
+  # under `excluded_tail` in the status, so a bad segment cannot vanish by
+  # being trimmed away.
+  frame_range: null
   urdf: ""
   # Used when no URDF is given. Metres.
   gripper:
@@ -339,6 +376,15 @@ render:
     aim_ahead_m: 0.14       # look this far beyond the finger tips
     grasp_offset_m: 0.02    # finger tips ahead of the gripper origin, matches retarget.origin_offset_m
     fov_deg: 90.0
+    # Scale the whole mount so the camera sits this far from the finger tips.
+    # Read by mount.wrist_camera_offset. It was read but never declared here,
+    # so nobody reading this file could see that the knob existed.
+    # null keeps mount_back_m and mount_up_m as given.
+    standoff_m: null
+  # Render even when the wrist camera looks from viewpoints the scan never
+  # covered. The render is then extrapolation, not interpolation. Say so
+  # wherever the video is shown.
+  allow_extrapolation: false
   # Target deployment camera model. `pinhole` or `fisheye`.
   camera_model: fisheye
   # OpenCV fisheye k1 to k4. Mild barrel distortion by default.

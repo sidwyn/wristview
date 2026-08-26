@@ -10,7 +10,6 @@ those exact numbers.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from wristview.coverage import (
     MAX_VIEWPOINT_GAP_M,

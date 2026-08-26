@@ -1,30 +1,34 @@
-"""Every 3D quantity has to land where it came from, in the frame it came from.
+"""Project every 3D quantity back into the frame that produced it.
 
-This is the check that would have caught the worst defect in this project on
-its first run. The hand's 3D position was collapsing toward the optical axis by
-a factor of 25, and nothing noticed for three sessions: the 2D overlays were
-drawn from the detector and stayed correct, the reconstruction and the splat
-were sound, and grasp detection failing looked like a grasp problem. Projecting
-the 3D hand back into its own frame and comparing it with the 2D detection
-takes a few lines and would have reported 614 px on day one.
+This check would have found the worst defect in this project on its first run.
+The hand's 3D position collapsed toward the optical axis by a factor of 25. No
+stage noticed for three sessions. The 2D overlays came from the detector and
+stayed correct. The reconstruction and the splat were sound. Grasp detection
+failed, and that looked like a grasp problem.
 
-It would also have caught both focal-length bugs, since depth scales with focal
-length and a wrong depth shows up as a wrong pixel spread.
+Project the 3D hand back into its own frame. Compare it with the 2D detection.
+That takes a few lines. It reports 614 px on day one.
 
-**Not every check here is independent evidence, and that difference is
-recorded rather than glossed.** An object pose solved by intersecting the ray
-through its mask centroid with the desk plane reprojects to that centroid
-exactly, by construction, whatever is wrong with the plane. Reporting that zero
-as a pass would repeat a mistake already made in this project, where a gate
-checked that the object centre sat at half its own height above the desk, a
-quantity the solver computes directly, and so passed at zero error on every
-frame of a real defect. Each check below is therefore labelled:
+The same check finds a wrong focal length. Depth scales with focal length. A
+wrong depth gives a wrong pixel spread.
 
-  independent      the 3D quantity was derived from something other than the
-                   2D observation it is being compared against, so agreement
-                   is evidence
-  by construction  the 3D quantity was derived from that observation, so
-                   agreement is arithmetic and only disagreement is news
+**Not every check here is evidence. This module records the difference.**
+
+An object pose solved from the ray through its mask centroid reprojects onto
+that centroid exactly. This holds whatever is wrong with the plane. A zero
+result there is arithmetic, not proof.
+
+This project already made that mistake once. A gate checked that the object
+centre sat at half its own height above the desk. The solver computes that
+quantity directly. The gate therefore passed at zero error on every frame of a
+real defect.
+
+Each check below carries a label:
+
+  independent      The 3D quantity came from a source other than the 2D
+                   observation. Agreement is then evidence.
+  by construction  The 3D quantity came from that observation. Agreement is
+                   then arithmetic. Only a large value carries information.
 """
 
 from __future__ import annotations
@@ -36,13 +40,13 @@ from .logging_setup import get
 
 log = get(__name__)
 
-# Thresholds, in pixels, on a frame about 1920 across. Written down here rather
-# than passed in, so that raising one is a visible edit to this file.
+# These thresholds are in pixels. They apply to a frame about 1920 px across.
+# Keep them in this file. A change to a threshold is then a visible edit.
 #
-# The hand bound is the load-bearing one. A correct lift measures 13 to 16 px
-# on session 6, which is the wrist keypoint against the MANO root offset rather
-# than error. The defect measured 614. 25 px is about 1.3 per cent of frame
-# width: comfortably above the honest residual, far below anything broken.
+# The hand bound matters most. A correct lift measures 13 to 16 px on session 6.
+# That residual is the wrist keypoint against the MANO root offset. It is not an
+# error. The defect measured 614 px. The limit of 25 px is about 1.3 per cent of
+# the frame width. It sits above the true residual and far below a fault.
 MAX_HAND_REPROJECTION_PX = 25.0
 MAX_OBJECT_REPROJECTION_PX = 40.0
 MAX_EFFECTOR_REPROJECTION_PX = 40.0
@@ -50,7 +54,7 @@ MAX_WRIST_CAMERA_REPROJECTION_PX = 60.0
 
 
 def project(points_cam: np.ndarray, intrinsics: Intrinsics) -> np.ndarray:
-    """Camera-frame points to pixels. Points behind the camera return NaN."""
+    """Project camera-frame points to pixels. Return NaN for points behind the camera."""
     points = np.asarray(points_cam, dtype=np.float64).reshape(-1, 3)
     out = np.full((len(points), 2), np.nan)
     ahead = points[:, 2] > 1e-9
@@ -60,7 +64,7 @@ def project(points_cam: np.ndarray, intrinsics: Intrinsics) -> np.ndarray:
 
 
 def to_camera(points_world: np.ndarray, camera_pose: np.ndarray) -> np.ndarray:
-    """World points into the camera frame, given camera-to-world."""
+    """Transform world points into the camera frame. Supply a camera-to-world pose."""
     points = np.asarray(points_world, dtype=np.float64).reshape(-1, 3)
     rotation = np.asarray(camera_pose)[:3, :3]
     origin = np.asarray(camera_pose)[:3, 3]
@@ -70,14 +74,15 @@ def to_camera(points_world: np.ndarray, camera_pose: np.ndarray) -> np.ndarray:
 def errors(
     points_cam: np.ndarray, observed_px: np.ndarray, intrinsics: Intrinsics
 ) -> np.ndarray:
-    """Per-point pixel distance between a projected point and its observation."""
+    """Return the pixel distance from each projected point to its observation."""
     predicted = project(points_cam, intrinsics)
     observed = np.asarray(observed_px, dtype=np.float64).reshape(-1, 2)
     return np.hypot(predicted[:, 0] - observed[:, 0], predicted[:, 1] - observed[:, 1])
 
 
 def summarise(values: np.ndarray, label: str, independent: bool, limit: float) -> dict:
-    """Median, p90 and worst, plus whether this check is evidence at all."""
+    """Return the median, the p90 and the worst value. State whether the check
+    gives evidence."""
     values = np.asarray(values, dtype=np.float64)
     values = values[np.isfinite(values)]
     if not len(values):
@@ -118,29 +123,31 @@ def hand_check(
     intrinsics: Intrinsics,
     root: int = 0,
 ) -> dict:
-    """Where the hand is, against where the detector saw it.
+    """Compare the hand position with the position the detector reports.
 
-    Gated on the root joint, and the reason is worth setting out because
-    "measure fewer joints" is what relaxing a gate looks like from outside.
+    The gate uses the root joint. State the reason clearly. A reader can
+    otherwise read "measure fewer joints" as a relaxed gate.
 
-    WiLoR infers the hand for a camera at about 12 m with a focal length near
-    37500 px, which is very nearly orthographic: the hand spans under 1 per
-    cent of its own depth, so the projection barely depends on the joints'
-    individual depths. Its 3D and 2D outputs agree there to 0.0 px, measured.
-    Our camera has the same hand at about 0.48 m, where it spans 19 per cent of
-    its depth and perspective is strong, so the joint depths WiLoR never had to
-    get right start to matter. Measured on real06 demo_0: projecting every
-    joint at its own depth gives 80 to 149 px, while projecting them all at the
-    root depth, which is the assumption WiLoR actually made, gives 6 to 10 px.
+    WiLoR infers the hand for a camera at about 12 m. That camera has a focal
+    length near 37500 px. It is almost orthographic. The hand spans under 1 per
+    cent of its own depth. The projection therefore barely depends on the depth
+    of each joint. WiLoR's 3D and 2D outputs agree there to 0.0 px, measured.
 
-    So an all-joint bound is a bound on WiLoR's weak-perspective assumption,
-    not on anything this pipeline does. The root is the hand's position, which
-    is what the whole pipeline consumes and what the 25x defect destroyed: it
-    would read 614 px here.
+    Our camera holds the same hand at about 0.48 m. The hand spans 19 per cent
+    of its depth. Perspective is strong. The joint depths now matter. WiLoR
+    never had to get them right.
 
-    The all-joint figure is still computed and reported, because a change in it
-    means the hand's shape or depth moved, and because hiding it would make
-    this look like the choice it is not.
+    Session real06 demo_0 gives the numbers. Project each joint at its own
+    depth and the error is 80 to 149 px. Project every joint at the root depth
+    and the error is 6 to 10 px. The second case matches WiLoR's assumption.
+
+    An all-joint bound therefore measures WiLoR's assumption. It does not
+    measure this pipeline. The root gives the hand position. The pipeline uses
+    that position. The 25x defect destroyed it and would read 614 px here.
+
+    This function still computes and reports the all-joint figure. A change in
+    that figure shows a change in the hand shape or depth. Hide it and the gate
+    looks like a choice that it is not.
     """
     per_frame = []
     all_joints = []
@@ -158,7 +165,7 @@ def hand_check(
         if len(full):
             all_joints.append(float(np.median(full)))
 
-        # The same joints under the assumption WiLoR made when it placed them.
+        # Project the same joints under WiLoR's own assumption.
         depth = cam[root, 2]
         if depth > 1e-9:
             u = intrinsics.fx * cam[:, 0] / depth + intrinsics.cx
@@ -190,14 +197,16 @@ def object_check(
     intrinsics: Intrinsics,
     sources: np.ndarray | None = None,
 ) -> dict:
-    """Object centre against its mask centroid.
+    """Compare the object centre with its mask centroid.
 
-    By construction while the object rests: the plane solve places the centre
-    on the ray through that very centroid, so it reprojects onto it exactly no
-    matter how wrong the plane or the object height is. It becomes independent
-    the moment the object is carried, because the carried centre is fixed by
-    the hand and only constrained along the ray. So this is split, and the
-    carried frames are the ones that carry evidence.
+    This check is by construction while the object rests. The plane solve puts
+    the centre on the ray through that centroid. The centre therefore reprojects
+    onto the centroid exactly. This holds for any error in the plane or in the
+    object height.
+
+    The check becomes independent once a hand carries the object. The hand then
+    fixes the carried centre. The ray constrains it in one direction only. This
+    function splits the two cases. The carried frames give the evidence.
     """
     per_frame = []
     carried = []

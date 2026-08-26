@@ -232,3 +232,38 @@ def write_video(
     except subprocess.CalledProcessError as exc:
         log.warning("preview video failed: %s", exc.stderr.strip()[:400])
         return None
+
+
+def audio_streams(path) -> list[dict]:
+    """List the audio streams in a file. Return an empty list when there are none.
+
+    Parse the JSON output. Do not read a line of text output.
+
+    A text-mode check reported "no audio" for two files that carry audio. Those
+    two files hold a third stream, a one-frame timecode track. ffprobe emits an
+    empty record for it, so the csv output starts with a blank line. A `head -1`
+    then returns that blank line. The third file has two streams, no blank line,
+    and the same command worked. The failure was silent and it was wrong in the
+    direction that loses data.
+    """
+    import json as _json
+    import subprocess
+
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-print_format", "json", "-show_streams",
+            str(path),
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    payload = _json.loads(result.stdout)
+    return [
+        stream for stream in payload.get("streams", [])
+        if stream.get("codec_type") == "audio"
+    ]
+
+
+def has_audio(path) -> bool:
+    """State whether a file carries an audio stream."""
+    return bool(audio_streams(path))
+

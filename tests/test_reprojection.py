@@ -21,9 +21,9 @@ from wristview.reprojection import (
     hand_check,
     object_check,
     project,
+    standoff_check,
     summarise,
     to_camera,
-    standoff_check,
 )
 
 NUM_LANDMARKS = 21

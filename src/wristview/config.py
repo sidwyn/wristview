@@ -18,6 +18,44 @@ import yaml
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "configs" / "default.yaml"
 
 
+
+def _unknown_keys(overrides: dict, known: dict, prefix: str = "") -> list[str]:
+    """List the override keys that the default config does not define.
+
+    The default config is the register of every key the code reads. An override
+    outside it reaches no reader.
+
+    A silent discard is the failure this prevents. Session real26 passed
+    `estimate.hand.stride`, which no code reads, and the run reported a setting
+    that never took effect. The 150 mm marker default failed the same way from
+    the other direction: a forgotten override left a wrong value in place.
+    """
+    out: list[str] = []
+    for key, value in overrides.items():
+        path = f"{prefix}{key}"
+        if key not in known:
+            out.append(path)
+            continue
+        if isinstance(value, dict) and isinstance(known[key], dict):
+            # `per_clip` maps clip ids the operator chooses, so its keys cannot
+            # be registered in advance. Check one level deeper instead.
+            if key == "per_clip":
+                for clip, settings in value.items():
+                    if not isinstance(settings, dict):
+                        continue
+                    for inner in settings:
+                        if inner not in _PER_CLIP_KEYS:
+                            out.append(f"{path}.{clip}.{inner}")
+                continue
+            out.extend(_unknown_keys(value, known[key], prefix=f"{path}."))
+    return out
+
+
+# Keys a per-clip block may carry. These are read in the stages rather than
+# declared in the default config, because the clip ids are not known in advance.
+_PER_CLIP_KEYS = {"select", "prompt", "object_height_m"}
+
+
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Merge override into base. Nested dicts merge, everything else replaces."""
     out = copy.deepcopy(base)
@@ -50,6 +88,16 @@ class Config:
                     data = _deep_merge(data, yaml.safe_load(handle) or {})
 
         if overrides:
+            unknown = _unknown_keys(overrides, data)
+            if unknown:
+                raise ValueError(
+                    "these config keys are not read by any code:\n  "
+                    + "\n  ".join(unknown)
+                    + "\n\nA key that no code reads is silently discarded. "
+                    "Session real26 passed estimate.hand.stride and believed "
+                    "hand tracking ran on every second frame. It ran on every "
+                    "frame. Check the spelling against configs/default.yaml."
+                )
             data = _deep_merge(data, overrides)
 
         return cls(data=data, source_path=source)

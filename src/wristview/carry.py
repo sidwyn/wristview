@@ -1,32 +1,36 @@
-"""Object pose while the object is off the table.
+"""Track the object pose while a hand holds the object off the table.
 
 `plane.object_pose_on_plane` solves the object from its silhouette and the desk
-it stands on, which removed the monocular-depth dependency and brought the
-pre-contact resting error from 11-16 cm down to 3.27 cm. It has one property
-that is easy to miss and fatal downstream: it pins the object to the desk. The
-centre is placed at `offset + height / 2` on every frame, so the tracked object
-sits at exactly the same height for the whole clip.
+below it. That method removed the monocular-depth dependency. It brought the
+pre-contact resting error from 11-16 cm down to 3.27 cm.
 
-Session 6 clip 5 measured 2.000 cm above the desk on all 185 valid frames, to a
-spread of 0.0000 mm, while the operator's wrist rose to 24.7 cm. Nothing in the
-run reported a problem. The consequence surfaced two stages later as grasp
-detection finding contact on 0 of 186 frames: the fingertips cannot approach an
-object that stays on the table while the hand carries it away, so the median
-fingertip-to-object gap was 13.8 cm, which is the lift height.
+The method has one property that is easy to miss. It fixes the object to the
+desk. It places the centre at `offset + height / 2` on every frame. The tracked
+object therefore holds one height for the whole clip.
 
-So the plane solve is right up to the moment of contact and wrong after it, and
-those are the frames a manipulation dataset is about.
+Session 6 clip 5 measured 2.000 cm above the desk on all 185 valid frames. The
+spread was 0.0000 mm. The operator's wrist rose to 24.7 cm. No stage reported a
+problem.
 
-The fix keeps the part that works and replaces only what breaks. The silhouette
-ray is correct throughout: it points at the object whether the object is on the
-desk or in the air. Only the distance along it is wrong once the object lifts.
-On the desk, the plane fixes that distance. In the hand, the hand fixes it: the
-object is where the fingers are, so the centre is the point on the ray nearest
-the grasp centre. Neither branch estimates depth.
+The consequence appeared two stages later. Grasp detection found contact on 0 of
+186 frames. Fingertips cannot reach an object that stays on the table while the
+hand carries it away. The median fingertip-to-object gap was 13.8 cm. That gap
+is the lift height.
 
-Contact is decided while the object is still at rest, which is when the plane
-solve is trustworthy, and that is what breaks the circularity: contact needs the
-object pose, the carried pose needs contact, and the resting pose needs neither.
+So the plane solve is correct until contact. It is wrong after contact. A
+manipulation dataset needs the frames after contact.
+
+This module keeps the correct part and replaces the broken part. The silhouette
+ray stays correct throughout. It points at the object on the desk and in the
+air. Only the distance along the ray becomes wrong after the lift.
+
+On the desk, the plane fixes that distance. In the hand, the hand fixes it. The
+centre is the point on the ray nearest the grasp centre. Neither branch
+estimates depth.
+
+Contact is decided while the object still rests. The plane solve is reliable at
+that moment. This breaks a circular dependency. Contact needs the object pose.
+The carried pose needs contact. The resting pose needs neither.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ from .logging_setup import get
 
 log = get(__name__)
 
-# MANO fingertips that oppose in a pinch or a wrap.
+# These MANO fingertips oppose in a pinch or a wrap.
 FINGERTIPS = (4, 8, 12)
 WRIST = 0
 
@@ -45,11 +49,11 @@ WRIST = 0
 def point_on_ray_closest_to(
     origin: np.ndarray, direction: np.ndarray, target: np.ndarray
 ) -> np.ndarray:
-    """Where along the ray it passes nearest `target`.
+    """Find the point on the ray that lies nearest to `target`.
 
-    The ray is the one certain thing in a carried frame: it points at the
-    object. This picks the distance along it, and clamps behind the camera
-    away, because an object behind the lens is not what the mask saw.
+    The ray is reliable in a carried frame. It points at the object. This
+    function selects the distance along the ray. It also clamps points behind
+    the camera. The mask cannot see an object behind the lens.
     """
     direction = np.asarray(direction, dtype=np.float64)
     length = float(np.linalg.norm(direction))
@@ -61,7 +65,7 @@ def point_on_ray_closest_to(
 
 
 def grasp_centre(landmarks: np.ndarray) -> np.ndarray:
-    """Middle of the opposing fingertips, which is where a held object sits."""
+    """Return the midpoint of the opposing fingertips. A held object sits there."""
     return np.asarray(landmarks, dtype=np.float64)[list(FINGERTIPS)].mean(axis=0)
 
 
@@ -71,22 +75,24 @@ def resting_pose(
     stillness_m: float = 0.01,
     min_rest_frames: int = 5,
 ) -> tuple[np.ndarray, dict] | None:
-    """Where the object sat before anything picked it up.
+    """Find where the object rested before a hand lifted it.
 
-    Decided from the object alone. An earlier version asked whether the hand
-    was far from the object and used the frames where it was, which sounds
-    right and is exactly backwards: during a carry the plane solve leaves the
-    object on the table while the hand is in the air, so every carried frame
-    looks like the hand is clear. Session 6 clip 1 admitted 336 of 338 frames
-    that way, with 7.36 cm of scatter, and found no contact at all. Filtering
-    on the broken quantity cannot detect that the quantity is broken.
+    This function uses the object alone.
 
-    Stillness does not have that problem. While the object rests, the ray
-    through its silhouette is fixed and the plane solve returns the same point
-    every frame. While it is carried, the ray sweeps and the point slides
-    across the desk, whatever height the object is really at. The first
-    sustained still run is the object's starting place, which is the one
-    contact detection needs.
+    An earlier version measured the distance from the hand to the object. It
+    kept the frames where the hand was far away. That test is backwards. During
+    a carry the plane solve leaves the object on the table. The hand is in the
+    air. Every carried frame therefore looks clear. Session 6 clip 1 accepted
+    336 of 338 frames and gave 7.36 cm of scatter. It found no contact. A filter
+    that uses a broken quantity cannot detect the fault in that quantity.
+
+    Stillness avoids the fault. While the object rests, the silhouette ray is
+    fixed. The plane solve returns the same point on every frame. While the hand
+    carries the object, the ray sweeps. The point then slides across the desk.
+    This holds at any true object height.
+
+    Take the first sustained still run. That run gives the object's start
+    position. Contact detection needs that position.
     """
     indices = np.nonzero(valid)[0]
     if len(indices) < min_rest_frames:
@@ -138,18 +144,18 @@ def contact_onsets(
     enter_m: float,
     min_frames: int,
 ) -> list[int]:
-    """Frames where the hand arrived at the object's resting place.
+    """Find the frames where the hand reached the object's resting place.
 
-    Only the onset is decided here, and only against the resting position,
-    because that is the one position known to be right. Asking the same
-    question about later frames does not work and the first draft of this
-    module got it wrong: once the object is carried away it is no longer near
-    where it was resting, so a distance-to-rest test reports release two frames
-    into every pick-up. Release is a different question, answered in
-    `solve_carried` where the silhouette is available to answer it.
+    This function decides the onset only. It measures against the resting
+    position. That position is the one position known to be correct.
 
-    `min_frames` requires the hand to stay there, so that a hand passing over
-    the object on its way somewhere else does not register as a grasp.
+    Do not apply the same test to later frames. The first draft of this module
+    did so and failed. After a lift the object is no longer near its resting
+    place. A distance-to-rest test then reports a release two frames into every
+    pick-up. `solve_carried` decides the release. It uses the silhouette.
+
+    `min_frames` makes the hand stay at the object. A hand that passes over the
+    object does not then register as a grasp.
     """
     count = len(landmarks)
     near = np.zeros(count, dtype=bool)
@@ -176,7 +182,7 @@ def contact_onsets(
 def _distance_to_ray(
     point: np.ndarray, origin: np.ndarray, direction: np.ndarray
 ) -> float:
-    """How far `point` sits off the line, in metres."""
+    """Return the distance from `point` to the line, in metres."""
     length = float(np.linalg.norm(direction))
     if length < 1e-12:
         return 0.0
@@ -197,21 +203,21 @@ def solve_carried(
     release_ray_m: float = 0.06,
     release_frames: int = 3,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
-    """Object pose per frame: on the desk before contact, in the hand after.
+    """Return the object pose per frame. Use the desk before contact and the
+    hand after contact.
 
-    From each onset the object is rigidly attached to the hand. The attachment
-    is measured once, at the onset frame, where the object is still at its
-    resting place and the plane solve is still correct. Carrying that one
-    transform forward is what makes the motion rigid rather than a fresh guess
-    each frame.
+    At each onset, attach the object to the hand. Measure the attachment once,
+    at the onset frame. The object still rests there. The plane solve is still
+    correct there. Carry that one transform forward. The motion is then rigid.
+    A per-frame estimate would drift instead.
 
-    Release is decided by disagreement, not by distance. While the object is
-    held, the silhouette ray and the hand point at the same place. When the
-    object is set down and the hand withdraws, the mask stays with the object
-    and the hand does not, so the hand-predicted position swings off the ray.
-    `release_frames` consecutive frames of that is a release, and the run ends
-    at the first of them rather than the last, because the object stopped
-    following the hand at the start of the disagreement.
+    Decide the release by disagreement, not by distance. While the hand holds
+    the object, the silhouette ray and the hand agree. When the hand sets the
+    object down and withdraws, the mask stays with the object. The hand moves
+    away. The hand-predicted position then leaves the ray.
+
+    Count `release_frames` frames of disagreement. End the run at the first of
+    those frames. The object stopped following the hand at that frame.
     """
     count = len(plane_poses)
     poses = plane_poses.copy()
@@ -250,15 +256,16 @@ def solve_carried(
                         break
                 else:
                     pending.clear()
-                # The silhouette constrains the position across the image, the
-                # hand constrains it along the ray. Each is used for what it
-                # knows, and neither estimates depth.
+                # The silhouette constrains the position across the image.
+                # The hand constrains the position along the ray. Use each one
+                # for what it measures. Neither estimates depth.
                 centre = point_on_ray_closest_to(
                     camera_positions[index], rays[index], target
                 )
             else:
                 pending.clear()
-                centre = target     # no mask this frame, so the hand is all there is
+                # This frame has no mask. Use the hand only.
+                centre = target
 
             poses[index] = np.eye(4)
             poses[index][:3, :3] = rotation
@@ -266,8 +273,7 @@ def solve_carried(
             valid[index] = True
             source[index] = "carried"
 
-        # Frames provisionally written after the release point belong to the
-        # plane solve, not to the hand.
+        # Return the frames after the release point to the plane solve.
         for index in range(stop, count):
             if source[index] != "carried":
                 break

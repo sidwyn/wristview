@@ -1,40 +1,38 @@
-"""Was the splat ever shown the viewpoints it is being asked to render from?
+"""Check that the scan covers the viewpoints the render needs.
 
-A Gaussian splat is an interpolator. It is sharp where training views were and
-soft to wrong where they were not, and no amount of training, densification or
-Gaussian count changes that. CAPTURE-SOP.md has said so since session 3:
+A Gaussian splat interpolates. It is sharp where training views exist. It is
+soft or wrong where they do not. More training does not change this. A higher
+Gaussian count does not change this.
 
-    The virtual wrist camera renders from 0.10 m. Every session so far was
-    scanned from 0.5 m and further, so every wrist frame is an extrapolation
-    rather than an interpolation ... This is the one defect in the current
-    renders that only a capture change can fix.
+CAPTURE-SOP.md states the rule since session 3. The wrist camera renders from
+0.10 m. Earlier sessions scanned from 0.5 m and further. Every wrist frame was
+therefore an extrapolation. Only a capture change corrects this defect.
 
-Session 6 shipped anyway, because nothing measured it. Its scan:
+Session 6 shipped with the defect. No check measured it. Its scan gave these
+numbers:
 
-    max baseline between any two views    2.96 cm
+    max baseline between two views        2.96 cm
     total camera path                     18.5 cm over 327 frames
-    height above the desk                 41.1 to 43.9 cm, a 2.7 cm band
+    height above the desk                 41.1 to 43.9 cm
     baseline over subject distance        0.069
 
-while the wrist camera renders from 19.8 to 38.5 cm and travels 1.4 m. Every
-rendered frame sat below the lowest scan view. The reconstruction still
-reported 327 of 327 registered at 1.3565 px, and the splat still reached
-30.21 dB, because both of those measure the scan against itself.
+The wrist camera rendered from 19.8 to 38.5 cm. It travelled 1.4 m. Every
+rendered frame was below the lowest scan view. The reconstruction reported 327
+of 327 frames registered at 1.3565 px. The splat reached 30.21 dB. Both numbers
+measure the scan against itself.
 
-That last point is worth stating plainly. PSNR computed on the scan's own views
-is nearly meaningless as a novel-view figure when every view sits inside a 3 cm
-ball: it is one viewpoint measured 327 times. A high number there is consistent
-with a render that falls apart 20 cm lower.
+Read that last point carefully. PSNR on the scan's own views means little. Every
+view sits inside a 3 cm ball. The number describes one viewpoint measured 327
+times. A high number there permits a render that fails 20 cm lower.
 
-So this module asks two questions the existing gates do not:
+This module asks two questions that the other gates do not ask.
 
-  is the scan itself capable of constraining geometry
-      a capture that only rotates has no parallax and cannot fix depth at all,
-      whatever its reprojection error says
+First: can the scan constrain geometry? A capture that only rotates has no
+parallax. It cannot fix depth. Its reprojection error stays low.
 
-  do the render viewpoints lie inside it
-      per rendered frame, how far away is the nearest scan view, and is the
-      frame below the scan's floor
+Second: do the render viewpoints lie inside the scan? For each rendered frame,
+measure the distance to the nearest scan view. Also count the frames below the
+scan floor.
 """
 
 from __future__ import annotations
@@ -45,27 +43,28 @@ from .logging_setup import get
 
 log = get(__name__)
 
-# Thresholds, written down rather than passed in, so that changing one is a
-# visible edit to this file.
+# Keep the thresholds in this file. A change to a threshold is then a visible
+# edit.
 #
-# A workspace is roughly 0.6 m across and the SOP asks for a wide orbit of it,
-# so an obedient scan has a baseline of that order. 0.30 m is half of it, and
-# session 6 managed 0.0296 m, so this fails the real failure by a factor of ten
-# rather than sitting just above it.
+# A workspace is about 0.6 m across. The SOP asks for a wide orbit of it. A
+# correct scan therefore gives a baseline of that size. This limit is half of
+# it. Session 6 gave 0.0296 m. The limit rejects that failure by ten times.
 MIN_SCAN_BASELINE_M = 0.30
 
-# The SOP asks for a wide orbit with varied height, a close pass at the demo
-# camera's height, and a contact pass at 0.10 to 0.15 m. Obeying it spans well
-# over 0.30 m. Session 6 spanned 0.027 m.
+# The SOP asks for three passes. The first is a wide orbit with varied height.
+# The second is a close pass at the demo camera's height. The third is a contact
+# pass at 0.10 to 0.15 m. The three passes span more than 0.30 m. Session 6
+# spanned 0.027 m.
 MIN_SCAN_HEIGHT_SPAN_M = 0.15
 
-# How far a rendered viewpoint may sit from the nearest view that actually saw
-# the scene. Beyond this the render is extrapolating. Half the standoff is the
-# scale at which the parallax of nearby surfaces changes visibly.
+# This is the largest permitted distance from a rendered viewpoint to the
+# nearest scan view. Above this distance the render extrapolates. The value is
+# half the standoff. At that distance the parallax of near surfaces changes
+# visibly.
 MAX_VIEWPOINT_GAP_M = 0.15
 
-# A few frames may stray below the scan floor at the extremes of a reach.
-# Session 6 had 100 per cent of frames there.
+# A few frames can fall below the scan floor at the end of a reach. Session 6
+# had 100 per cent of its frames below the floor.
 MAX_FRACTION_BELOW_SCAN_FLOOR = 0.10
 
 
@@ -79,12 +78,13 @@ def scan_geometry(
     plane_offset: float,
     view_directions: np.ndarray | None = None,
 ) -> dict:
-    """Whether the scan can constrain geometry at all, before any render.
+    """Measure whether the scan can constrain geometry. Run this before a render.
 
-    Reported in Stage 1, where it is still cheap to reshoot. The numbers that
-    matter are translation, not count: 327 views taken from one spot are one
-    view, and a splat trained on them has no way to tell a near surface from a
-    far one.
+    Stage 1 reports this. A reshoot is still cheap at that point.
+
+    Translation matters here, not the view count. 327 views from one spot give
+    the information of one view. A splat trained on them cannot separate a near
+    surface from a far one.
     """
     centres = np.asarray(camera_centres, dtype=np.float64).reshape(-1, 3)
     if len(centres) < 2:
@@ -116,9 +116,9 @@ def scan_geometry(
         angles = np.degrees(np.arccos(np.clip(pick @ pick.T, -1, 1)))
         report["view_direction_spread_deg"] = round(float(angles.max()), 1)
 
-    # Distance to the subject, so the baseline can be read as a ratio. A normal
-    # object scan orbits at a ratio near 1; below about 0.2 depth is weakly
-    # constrained and the splat fills in with floaters.
+    # Measure the distance to the subject. The baseline then reads as a ratio.
+    # A normal object scan gives a ratio near 1. Below about 0.2 the depth is
+    # weakly constrained. The splat then adds floaters.
     subject = centres.mean(axis=0) - np.asarray(plane_normal) * float(np.median(heights))
     distance = float(np.median(np.linalg.norm(centres - subject, axis=1)))
     if distance > 1e-9:
@@ -149,10 +149,10 @@ def render_viewpoint_coverage(
     plane_offset: float,
     render_valid: np.ndarray | None = None,
 ) -> dict:
-    """Per rendered frame, how far it sits from anything that saw the scene.
+    """Measure the distance from each rendered frame to the nearest scan view.
 
-    Position only. Direction matters too, but position is where session 6 went
-    wrong by 20 cm and it is the part a capture change fixes.
+    This function uses position only. Direction also matters. Session 6 failed
+    on position by 20 cm. A capture change corrects position.
     """
     scan = np.asarray(scan_centres, dtype=np.float64).reshape(-1, 3)
     render = np.asarray(render_centres, dtype=np.float64).reshape(-1, 3)

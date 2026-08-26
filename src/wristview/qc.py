@@ -57,6 +57,18 @@ PREFLIGHT_EVIDENCE = (
 PREFLIGHT_PASS_MATCHES = 400.0
 PREFLIGHT_WARN_MATCHES = 250.0
 
+# Worst-case limits for pre-flight.
+#
+# The median hides a failing minority. Session real25 gave a median of 389
+# matches and a ratio of 0.97. Stage 2 then registered 73.4 per cent of the
+# clip. The failures formed two runs, one at each end of the take.
+#
+# Allow a tenth of the frames to fall below the warn bar. Allow one second of
+# consecutive weak frames. Stage 2 tolerates a short gap. It cannot recover a
+# run that spans a whole segment.
+PREFLIGHT_MAX_WEAK_FRACTION = 0.10
+PREFLIGHT_MAX_WEAK_RUN_S = 1.0
+
 # Superseded. The scan self-match ceiling used to be measured between frames
 # this far apart in time. Kept only so the old numbers can be reproduced.
 # in time. The number matters: adjacent frames at 6 fps are 0.17 s apart and
@@ -367,13 +379,26 @@ def palm_rotations(landmarks: np.ndarray) -> np.ndarray:
 
 
 def hand_velocity_outliers(
-    landmarks: np.ndarray, valid: np.ndarray, fps: float
+    landmarks: np.ndarray, valid: np.ndarray, fps: float,
+    frame_times_s: np.ndarray | None = None,
 ) -> dict:
     """Flag frames whose wrist rotation is faster than a human can move.
 
-    Returns a report including `outlier`, a mask over all frames. A step above
-    the limit condemns the later of the two frames, because that is the one
-    that arrived in the wrong place.
+    Return a report with `outlier`, a mask over all frames. A step above the
+    limit condemns the later of its two frames. That frame arrived in the wrong
+    place.
+
+    Supply `frame_times_s` whenever the caller has it. Stage 0 drops blurred
+    frames, so kept frames are not evenly spaced in time. A frame index is
+    therefore not a clock.
+
+    Session real26 shows the cost. Two steps spanned 1.25 s and 1.55 s of real
+    time after Stage 0 removed the frames between them. Read as one frame apart
+    at 17 fps, the hand appeared to move at about 4.8 m/s. The true speeds were
+    0.23 m/s and 0.12 m/s. The gate rejected a good clip.
+
+    Without `frame_times_s` this function falls back to `fps` and keeps the old
+    behaviour.
     """
     from scipy.spatial.transform import Rotation
 
@@ -395,7 +420,16 @@ def hand_velocity_outliers(
     relative = Rotation.from_matrix(
         np.einsum("nij,njk->nik", rotations[:-1].transpose(0, 2, 1), rotations[1:])
     )
-    seconds = np.diff(indices) / max(fps, 1e-6)
+    if frame_times_s is not None:
+        times = np.asarray(frame_times_s, dtype=float)
+        if len(times) != len(valid):
+            raise ValueError(
+                f"frame_times_s has {len(times)} entries and valid has {len(valid)}"
+            )
+        seconds = np.diff(times[indices])
+    else:
+        seconds = np.diff(indices) / max(fps, 1e-6)
+    seconds = np.maximum(seconds, 1e-6)
     rate = np.degrees(relative.magnitude()) / seconds
     # A step over the limit condemns the later of its two frames. One
     # displaced frame, though, produces two such steps, out and back, and

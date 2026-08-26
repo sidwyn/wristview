@@ -1,0 +1,68 @@
+WITHDRAWN - THE SPLAT THAT PRODUCED THIS FILE IS BROKEN
+
+Session real26, clip demo_0. Produced 2026-08-26. Withdrawn 2026-08-26.
+
+CAVEAT 0 - THE BACKGROUND IS NOT A RENDER OF THE SCENE
+  The splat cannot draw the scene from any viewpoint, including the ones it
+  trained on. Rendered from registered scan camera poses, straight from the
+  reconstruction, with no retarget and no wrist camera in the path, it scores
+  17.42 dB median against the photographs, worst view 15.25 dB. A splat that
+  holds the scene scores about 35 dB. The images show smears with no mat
+  pattern and no marker.
+
+  So the flat discs in the stills are not caused by extrapolation. Caveats 2
+  and 3 below describe real defects, and they are still real, but neither one
+  explains what this file looks like. The splat does.
+
+  Cause: 10455 Gaussians over 298 views, 35 per view. Four settings compound.
+    - init_points was a ceiling, not a target. The config asked for 60000 and
+      the splat started with 8810, the whole sparse cloud.
+    - iterations 3000, against the 30000 the method expects.
+    - densify_until_iter 2000, so densification ran 17 rounds.
+    - resolution 540, so the splat never saw the mat pattern at all.
+
+  A gate now catches this. See tools/check_splat.py and src/wristview/splatqc.py.
+
+This file is a diagnostic. It is not training data. It is not evidence for any
+claim. Do not show it without these caveats.
+
+CAVEAT 1 - TRIMMED
+  Retargeted from frame 57 to frame 231 only, of 439 frames.
+  Frame 57 is where the hand first appears. Frame 231 is the release, measured
+  by the grasp detector. The clip shows reach through release and nothing after.
+  The excluded tail, frames 231 to 439, fails the hand velocity gate on its own:
+  5 flagged frames, longest run 2 against a limit of 1, maximum 1318 deg/s.
+  Every flagged frame in the clip lies in that excluded tail.
+
+CAVEAT 2 - EXTRAPOLATED VIEWPOINTS
+  The scan's lowest view sits 18.2 cm above the desk.
+  Rendered frames below that floor: 31 per cent, which is Stage 5's figure and
+  the correct one for this video. It counts rendered frames, after the
+  hand_valid filter.
+  The 47 per cent in the first version of this file counted all 387
+  control-rate poses, including poses that were never rendered. That was the
+  wrong population. The disagreement is resolved.
+  Extrapolation depth on below-floor frames: median 6.1 cm, p90 14.4 cm,
+  maximum 21.0 cm.
+  Invented in two runs: frames 0-58 (max 6.5 cm) and frames 65-189 (max 21.0 cm).
+  Nearest scan view: median 8.6 cm, p90 42.0 cm.
+
+CAVEAT 3 - IMPOSSIBLE POSES
+  7 rendered frames place the wrist camera BELOW the desk surface, minimum
+  -2.8 cm. A camera cannot be inside the table. Those frames are wrong, not
+  merely extrapolated.
+
+STATUS
+  Superseded. A GPU run at 30000 iterations and full resolution is prepared.
+  See GPU-COMMANDS-real26.md. The returned splat must pass the gate before any
+  frame is rendered from it.
+
+RENDER SETTINGS
+  640x360, fisheye, standoff 0.25 m, splat coverage 100 per cent.
+  render.allow_extrapolation was set for this run only. It is not in the config.
+  The gate is unchanged and still reports the failure.
+
+OPEN
+  WiLoR global-orientation jumps of 45 to 66 degrees in 50 ms remain
+  unexplained. Palm-frame conditioning and rig occlusion were both tested and
+  refuted as causes.
