@@ -130,17 +130,34 @@ def train_splat(
     empty_cache_interval = int(config.get("empty_cache_interval", 50))
 
     rng = np.random.default_rng(0)
+    # `init_points` is a target, not a ceiling.
+    #
+    # This line used to subsample a large cloud and otherwise take whatever SfM
+    # gave it. Session real26 asked for 60000 and started with 8810, the whole
+    # sparse cloud. Densification added 1645 more over 2000 steps and the splat
+    # finished at 10455 with a train PSNR of 17.51 dB. Rendered from its own
+    # training views it produced a blur.
+    #
+    # A thin start starves the optimizer: densification splits and clones what
+    # is already there, so it cannot cover a region that holds no Gaussians.
+    # Grow the cloud to the target by jittering copies of the SfM points, which
+    # keeps the geometry and gives the optimizer somewhere to work.
     init_points = int(config.get("init_points", 60000))
     if len(points) > init_points:
         idx = rng.choice(len(points), init_points, replace=False)
         points, colors = points[idx], colors[idx]
-    elif len(points) < 1000:
-        # A thin sparse cloud starves the optimizer. Jitter each point into a
-        # small cluster so densification has somewhere to start.
-        repeats = max(2, 1000 // max(len(points), 1))
+    elif len(points) < init_points:
+        repeats = int(np.ceil(init_points / max(len(points), 1)))
         spread = float(np.linalg.norm(points.std(axis=0))) * 0.02 + 1e-3
-        points = np.repeat(points, repeats, axis=0) + rng.normal(0, spread, (len(points) * repeats, 3))
+        grown = np.repeat(points, repeats, axis=0)
+        # Leave the first copy of each point exactly where SfM put it.
+        jitter = rng.normal(0, spread, grown.shape)
+        jitter[::repeats] = 0.0
+        points = grown + jitter
         colors = np.repeat(colors, repeats, axis=0)
+        if len(points) > init_points:
+            idx = rng.choice(len(points), init_points, replace=False)
+            points, colors = points[idx], colors[idx]
 
     centre = points.mean(axis=0)
     scene_extent = float(np.percentile(np.linalg.norm(points - centre, axis=1), 95))
@@ -296,6 +313,10 @@ def train_splat(
         "scene_extent": round(scene_extent, 4),
         "train_psnr_mean_db": round(float(np.mean(scores)), 2) if scores else None,
         "train_psnr_min_db": round(float(np.min(scores)), 2) if scores else None,
+        # Keep every measurement, not just the summary. The gate needs the
+        # median, and a mean hides a view that failed on its own.
+        "train_psnr_per_view_db": [round(float(v), 3) for v in scores],
+        "training_views": len(cameras),
         "history": history,
         "note": "PSNR is measured on training views. There are too few views to hold any out.",
     }

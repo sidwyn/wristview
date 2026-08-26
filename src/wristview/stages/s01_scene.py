@@ -105,6 +105,31 @@ def _fit_arkit_scale(
     return scale, transform, diagnostics
 
 
+
+def _required_marker_length(scale_cfg: dict) -> float:
+    """Read the marker size. Refuse to guess it.
+
+    A default for a physical quantity fails silently. `aruco_marker_length_m`
+    held 0.15 from the first commit. No marker this project printed was 150 mm.
+    A run that forgot the override built a reconstruction 1.5x too large, and
+    every metric number downstream inherited that error.
+    """
+    value = scale_cfg.get("aruco_marker_length_m")
+    if value is None:
+        raise ValueError(
+            "scene.scale.aruco_marker_length_m is required and has no default. "
+            "Measure the marker's black square with a tape and pass it, for "
+            "example --set scene.scale.aruco_marker_length_m=0.100"
+        )
+    length = float(value)
+    if not 0.01 <= length <= 1.0:
+        raise ValueError(
+            f"scene.scale.aruco_marker_length_m is {length} m, outside 0.01 to "
+            f"1.0 m. Check the units: the value is metres, not millimetres."
+        )
+    return length
+
+
 def _fit_aruco_scale(
     frames_dir: Path,
     frame_names: list[str],
@@ -696,7 +721,7 @@ def run(ctx: RunContext) -> dict:
                 scale_result = _fit_aruco_scale(
                     frames_dir, frame_names, poses, intrinsics,
                     scale_cfg.get("aruco_dict", "DICT_4X4_50"),
-                    float(scale_cfg.get("aruco_marker_length_m", 0.15)),
+                    _required_marker_length(scale_cfg),
                     marker_id=scale_cfg.get("aruco_marker_id"),
                     min_detections=int(scale_cfg.get("aruco_min_detections", 10)),
                     scene_points=sparse_xyz,
@@ -907,6 +932,32 @@ def run(ctx: RunContext) -> dict:
             rec.output("splat_ply", out_dir / "splat_points.ply")
             rec.metric("splat", {k: v for k, v in splat_metrics.items() if k != "history"})
             write_json(out_dir / "splat_history.json", splat_metrics["history"])
+
+            # The splat gate. A splat that cannot redraw its own training views
+            # cannot draw a new one either.
+            #
+            # real26 trained to 17.51 dB over 10455 Gaussians and shipped. The
+            # wrist render then produced featureless discs. The numbers that
+            # would have caught it were already measured here and nothing read
+            # them. `tools/check_splat.py` applies the same gate to a splat
+            # trained on a GPU.
+            from ..splatqc import evaluate as evaluate_splat
+
+            report = evaluate_splat(
+                splat_metrics.get("train_psnr_per_view_db", []),
+                gaussian_count=int(splat_metrics["gaussians"]),
+                view_count=int(splat_metrics.get("training_views", len(cameras))),
+            )
+            rec.metric("gate_splat_quality", report)
+            if report["passed"] is False:
+                for line in report["failures"]:
+                    log.error("GATE FAILED splat_quality: %s", line)
+                message = (
+                    "Gate fails: the splat cannot reproduce its own training "
+                    "views. " + " ".join(report["failures"])
+                )
+                rec.note(message)
+                raise RuntimeError(message)
         else:
             rec.backend("splat", "disabled")
             log.warning("splat training disabled by config; Stage 5 will have no background")
