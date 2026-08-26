@@ -385,6 +385,12 @@ render:
   # covered. The render is then extrapolation, not interpolation. Say so
   # wherever the video is shown.
   allow_extrapolation: false
+  # Load the splat layer from a directory rendered elsewhere, instead of
+  # rasterising it here. Set to the output of tools/cuda_job/render_wrist.py.
+  # The local MPS rasteriser drops Gaussians past a per-tile cap and does not
+  # say so, which makes it unusable above a few hundred thousand Gaussians.
+  # null renders locally.
+  splat_layer_dir: null
   # Target deployment camera model. `pinhole` or `fisheye`.
   camera_model: fisheye
   # OpenCV fisheye k1 to k4. Mild barrel distortion by default.

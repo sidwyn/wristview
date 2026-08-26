@@ -1,0 +1,55 @@
+real26 wrist view, GPU splat. Produced 2026-08-26.
+
+387 frames at 640x360, control rate, fisheye. Supersedes
+deliverables/real26-provisional, which was drawn from a broken splat.
+
+THE SPLAT PASSES THE GATE
+  3,912,607 Gaussians over 298 registered views, 13,130 per view.
+  Rendered from registered scan camera poses, straight from the reconstruction,
+  no retarget and no wrist camera in the path: 30.57 dB median over 12 views,
+  worst 27.18 dB, best 33.54 dB. The gate needs 25 dB and 200 per view.
+  Measured by gsplat on a CUDA box, not by the local MPS rasteriser, which
+  scores this same splat at 7.21 dB and is not trusted. See MPS-RASTERISER.md.
+  Trained 30,000 iterations at 1920 from an 8,810 point seed.
+
+CAVEAT 1 - EXTRAPOLATED VIEWPOINTS
+  This is the one defect here that no code change can fix. Only a capture can.
+  The scan's lowest view sits 18.2 cm above the desk.
+  Rendered frames below that floor: 47 per cent, 181 of 387.
+  Wrist camera height: min 1.5 cm, median 18.3 cm, max 21.8 cm above the desk.
+  Nearest scan view: median 10.6 cm, p90 37.0 cm.
+  Stage 5's viewpoint gate FAILS on this and the failure is recorded in
+  05_render/demo_0/status.json. A splat interpolates; below the scan floor it
+  is extrapolating away from every training view at once.
+  To fix it, rescan with the camera down at desk level.
+
+  This 47 per cent is not the 31 per cent quoted for the provisional render.
+  That figure was for a different population: 174 video-rate frames after the
+  hand_valid filter, trimmed to frames 57 to 231. This render is all 387
+  control-rate poses, untrimmed. Both numbers are correct for their own render.
+
+RESOLVED SINCE THE PROVISIONAL RENDER
+  Impossible poses: 0 frames below the desk surface, minimum +1.5 cm.
+  The provisional render had 7, down to -2.8 cm.
+  Splat coverage: 94.4 per cent mean, 64.9 per cent minimum, measured on alpha.
+  Image detail: laplacian variance median 347, minimum 158 over 20 sampled
+  frames. The provisional render's flat discs scored near zero.
+
+OBJECT POSE
+  439 valid frames of 439. Height of the object centre above the desk:
+    resting on the plane, 372 frames: median 3.500 cm, std 0.122 cm
+    carried by the hand,   67 frames: median 4.784 cm, std 1.531 cm, max 8.459 cm
+  The carried frames vary. Session 6 clip 5 held 2.000 cm on all 185 frames with
+  a spread of 0.0000 mm while the wrist rose to 24.7 cm, which is the fault this
+  measurement exists to detect. It is not present here.
+
+OPEN
+  WiLoR global-orientation jumps of 45 to 66 degrees in 50 ms remain
+  unexplained. Palm-frame conditioning and rig occlusion were both tested and
+  refuted as causes.
+  The MPS rasteriser has three faults and a 10 dB gap. See MPS-RASTERISER.md.
+
+PROVENANCE
+  Pod lb090tc2fqt39c, RTX 4090. Payload sha256 6041e34b...,
+  splat.pt sha256 d7bdf0d2..., wrist renders sha256 1f5a2ee0...,
+  every one verified on both ends before the pod was released.

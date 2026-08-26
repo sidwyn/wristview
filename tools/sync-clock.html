@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sync clock</title>
+<style>
+  :root { --fg:#fff; --bg:#000; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html,body { height:100%; background:var(--bg); color:var(--fg);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; overflow:hidden; }
+  #wrap { height:100%; display:flex; flex-direction:column; }
+  #flash { flex:0 0 22%; background:#000; }
+  #flash.on { background:#fff; }
+  #clock { flex:1; display:flex; align-items:center; justify-content:center;
+    font-size:14vw; font-weight:700; letter-spacing:-0.02em; line-height:1;
+    font-variant-numeric: tabular-nums; }
+  #ms { color:#ff3b30; }
+  #bar { flex:0 0 22%; display:flex; }
+  #bar div { flex:1; }
+  #meta { position:absolute; top:8px; left:12px; font-size:14px; opacity:.6; }
+  #hint { position:absolute; bottom:8px; left:12px; font-size:14px; opacity:.6; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="flash"></div>
+  <div id="clock"><span id="hms">00:00:00</span><span id="ms">.000</span></div>
+  <div id="bar"></div>
+</div>
+<div id="meta">SYNC CLOCK — point both cameras here for 3 seconds, before and after every take</div>
+<div id="hint">Flash bars alternate every 500 ms. Press F for fullscreen.</div>
+<script>
+  // High-contrast alternating blocks along the bottom, so a flash edge is
+  // visible even if the digits are unreadable at a distance or in blur.
+  const bar = document.getElementById('bar');
+  for (let i = 0; i < 16; i++) bar.appendChild(document.createElement('div'));
+  const cells = [...bar.children];
+
+  const hms = document.getElementById('hms');
+  const ms  = document.getElementById('ms');
+  const flash = document.getElementById('flash');
+
+  function pad(n, w) { return String(n).padStart(w, '0'); }
+
+  function tick() {
+    const d = new Date();
+    hms.textContent = pad(d.getHours(),2)+':'+pad(d.getMinutes(),2)+':'+pad(d.getSeconds(),2);
+    ms.textContent  = '.'+pad(d.getMilliseconds(),3);
+
+    // 500 ms square wave, phase-locked to the wall clock
+    const on = (d.getSeconds()*1000 + d.getMilliseconds()) % 1000 < 500;
+    flash.classList.toggle('on', on);
+    cells.forEach((c,i) => {
+      c.style.background = ((i % 2 === 0) === on) ? '#fff' : '#000';
+    });
+
+    requestAnimationFrame(tick);
+  }
+  tick();
+
+  addEventListener('keydown', e => {
+    if (e.key.toLowerCase() === 'f') {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else document.documentElement.requestFullscreen();
+    }
+  });
+</script>
+</body>
+</html>

@@ -42,3 +42,28 @@ def test_no_views_reports_nothing_rather_than_passing():
     report = evaluate([], gaussian_count=1_000_000, view_count=300)
     assert report["passed"] is None
     assert report["views_tested"] == 0
+
+
+def test_the_gpu_splat_passes_on_its_real_numbers():
+    """real26 after the GPU run, measured by gsplat at 1920x1080.
+
+    The same splat scored 7.21 dB through the MPS rasteriser, which had
+    discarded 11,076,570 Gaussian-tile pairs. That is why the gate's
+    authoritative input comes from tools/cuda_job/measure_splat.py.
+    """
+    measured = [30.46, 32.38, 29.05, 33.54, 31.32, 30.69,
+                28.66, 29.79, 27.18, 31.93, 32.45, 28.93]
+    report = evaluate(measured, gaussian_count=3_912_607, view_count=298)
+    assert report["passed"] is True
+    assert report["psnr_median_db"] > 25.0
+    assert report["gaussians_per_view"] > 200
+
+
+def test_the_mps_reading_of_that_same_splat_would_have_failed_it():
+    """The measurement the gate must never be given: a truncated render."""
+    report = evaluate([7.21, 6.39, 6.89], gaussian_count=3_912_607, view_count=298)
+    assert report["passed"] is False
+    # The count is healthy. Only the PSNR fails, which is the signature of a
+    # renderer fault rather than a thin splat.
+    assert len(report["failures"]) == 1
+    assert "training views" in report["failures"][0]

@@ -6,6 +6,24 @@ The rows share a family. A measurement stood in for the thing it was meant to
 test. The substitute agreed with the real quantity most of the time, so nothing
 looked wrong until it disagreed.
 
+**One sub-family is the most repeated defect in this project, and it is worth
+naming on its own: the code computed the exact number that described the
+failure, and then no code read it.** Not an approximation of that number, not a
+proxy. The number itself, correct, in memory, discarded.
+
+Rows 7, 9, 10, 11, 12 and 15 are all this. The trainer measured 17.51 dB on its
+own training views and nothing compared it to anything. The rasteriser counted
+11,076,570 dropped Gaussian-tile pairs, stored the count on the result object as
+`_overflow`, and no caller ever looked. `train_gsplat.py` printed a Gaussian
+count every 1,000 steps while the count sat unchanged for 30,000 of them.
+Stage 5 recorded splat alpha coverage of 100 per cent while drawing the wrong
+Gaussians at every pixel.
+
+The lesson is not "measure more". The measurement was always there. It is that a
+computed diagnostic with no reader is not a check, and writing one costs the
+same as writing a check while buying nothing. **If a number is worth computing,
+something must fail on it, or it must not be computed.**
+
 | # | Defect | What it measured | What it should have measured | Cost |
 |---|---|---|---|---|
 | 1 | Hand lift scaled all three translation components by `fx / wilor_focal` | the hand at the right depth | the hand at the right depth AND the right pixel | 25x lateral collapse; grasp never worked on any session; 614 px reprojection |
@@ -22,6 +40,8 @@ looked wrong until it disagreed.
 | 12 | `init_points: 60000` applied as a ceiling | the largest cloud allowed | the cloud the optimiser starts from | real26 seeded 8810 and nothing said the target was missed |
 | 13 | `train_gsplat.py` skipped an unreadable training image with `continue` | that the loop finished | that every registered view was loaded | a wrong image directory would train on zero views in silence |
 | 14 | `train_gsplat.py` read `undistorted/` and `cameras_pinhole.json` from a script that was never written | that undistortion was handled | whether it ran | every GPU run so far fitted a pinhole model to radially distorted images |
+| 15 | MPS rasteriser dropped Gaussians past a per-tile cap and stored the count in an unread `_overflow` | a render | a render of the whole splat | scored the 30.46 dB GPU splat at 7.21 dB and called it broken |
+| 16 | Splat coverage taken from the depth channel of an external render | that a ray met something | whether a surface was there | read 100 per cent where alpha was 0.911, min 0.625 |
 
 ## Row 7, in detail
 
@@ -124,3 +144,36 @@ for `undistort_export.py`'s two outputs since the real03 run, found neither,
 and fell back without comment. Measured on real26 the correction is 0.90 px at
 the frame border, so this did not break anything. It was still a fallback that
 reported nothing about which branch it took.
+
+
+## Rows 15 and 16, in detail
+
+Row 15 cost a wrong verdict on a good splat. The real26 GPU splat holds
+3,912,607 Gaussians and gsplat renders it at 30.46 dB from a registered scan
+pose. The MPS rasteriser scored the same splat, the same pose and the same
+photograph at 7.21 dB, and the new gate duly failed it. The gate was not wrong
+about its own measurement; it was wrong about what it was measuring.
+
+The rasteriser pads each tile to `max_per_tile` slots and discards the rest. At
+the default of 128 it discarded 11,076,570 Gaussian-tile pairs on one view and
+returned mean alpha 0.185. It had counted those 11 million and put the number on
+the result object. Nothing read it.
+
+Raising the cap to 16,384 leaves 15,224 dropped and lifts the score to 20.63 dB.
+A 10 dB gap to gsplat survives and is unexplained. See `MPS-RASTERISER.md`.
+
+Two things changed. Scoring a truncated render now raises instead of returning a
+number: `tools/check_splat.py` refuses, and says by how much it was truncated.
+And the authoritative gate moved to the GPU, where the renderer is verified:
+`tools/cuda_job/measure_splat.py` renders and measures, `check_splat
+--measurements` applies the thresholds, so the verdict still has exactly one
+implementation.
+
+Row 16 was caught within minutes of writing it, which is the only reason it is a
+short entry. The external render returns colour and depth; the first version
+took coverage from depth, on the reasoning that a depth of zero means the ray
+met nothing. But gsplat's expected-depth channel is alpha-weighted and non-zero
+wherever any Gaussian contributes at all. Stage 5 reported 100 per cent coverage
+on frames whose mean alpha was 0.911 and whose minimum was 0.625. The fix was to
+carry alpha back from the pod and apply the same `alpha > 0.35` rule the local
+path always used. Coverage now reads 94 per cent.

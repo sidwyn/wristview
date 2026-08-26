@@ -112,6 +112,34 @@ def _render_episode(
     background = np.asarray(cfg.get("background_rgb", [0.05, 0.05, 0.06]), dtype=np.float64)
     background_tensor = torch.tensor(background, device=device, dtype=torch.float32)
 
+    # A splat layer rendered elsewhere. The local MPS rasteriser pads each tile
+    # to `max_per_tile` and silently drops the rest, which at 256 loses tens of
+    # millions of Gaussian-tile pairs on a splat of this size and draws
+    # something that is not the scene. gsplat on a CUDA box draws it correctly,
+    # so that render is loaded here and composited by the code below.
+    #
+    # Compositing, the lens, the gripper and the object stay in this file. Only
+    # the splat layer moves.
+    layer_dir = cfg.get("splat_layer_dir")
+    external = Path(layer_dir) if layer_dir else None
+    external_meta = None
+    if external is not None:
+        external_meta = read_json(external / "render.json")
+        if [external_meta["width"], external_meta["height"]] != [width, height]:
+            raise ValueError(
+                f"the external splat layer is "
+                f"{external_meta['width']}x{external_meta['height']} and this "
+                f"render is {width}x{height}. They must match, or the depth "
+                f"test compares different pixels."
+            )
+        if int(external_meta["frames"]) != len(ee_poses):
+            raise ValueError(
+                f"the external splat layer holds {external_meta['frames']} "
+                f"frames and this episode has {len(ee_poses)}."
+            )
+        log.info("splat layer from %s, rendered by %s",
+                 external, external_meta.get("renderer", "unknown"))
+
     # The fisheye maps depend only on the intrinsics, so build them once.
     maps = None
     if cfg.get("camera_model", "pinhole") == "fisheye":
@@ -130,7 +158,30 @@ def _render_episode(
         # --- splat: the scene, with no human in it ---
         splat_color = np.tile(background, (height, width, 1))
         splat_depth = np.full((height, width), np.inf)
-        if splat is not None:
+        if external is not None:
+            colour_png = cv2.imread(str(external / "color" / f"{index:05d}.png"))
+            depth_png = cv2.imread(str(external / "depth" / f"{index:05d}.png"),
+                                   cv2.IMREAD_UNCHANGED)
+            if colour_png is None or depth_png is None:
+                raise FileNotFoundError(
+                    f"the external splat layer has no frame {index:05d}"
+                )
+            splat_color = cv2.cvtColor(colour_png, cv2.COLOR_BGR2RGB).astype(np.float64) / 255.0
+            metres = depth_png.astype(np.float64) / float(external_meta["depth_scale_mm"])
+            alpha_png = cv2.imread(str(external / "alpha" / f"{index:05d}.png"),
+                                   cv2.IMREAD_UNCHANGED)
+            if alpha_png is None:
+                raise FileNotFoundError(
+                    f"the external splat layer has no alpha for frame {index:05d}. "
+                    f"Coverage taken from depth alone reads 100 per cent on a "
+                    f"view that is largely empty, so it is not a substitute."
+                )
+            alpha = alpha_png.astype(np.float64) / 255.0
+            # The same rule the local path uses: below this the pixel holds no
+            # surface, so it must not win the depth test against the gripper.
+            splat_depth = np.where(alpha > 0.35, metres, np.inf)
+            splat_coverage[index] = float((alpha > 0.35).mean())
+        elif splat is not None:
             view = torch.tensor(view_matrix, device=device, dtype=torch.float32)
             with torch.no_grad():
                 result = splat_render(

@@ -304,6 +304,20 @@ def train_splat(
                 camera.width, camera.height, background=background,
                 tile_size=tile_size, max_per_tile=max_per_tile, near=0.01, far=1e4,
             )
+            # Never score a truncated render. The rasteriser pads each tile to
+            # `max_per_tile` and drops the rest, and it counts what it drops.
+            # A PSNR taken from a truncated image describes the cap, not the
+            # splat: the real26 GPU splat scored 6.39 dB at the default 128
+            # while gsplat put it at 30.46 dB.
+            dropped = int(result.__dict__.get("_overflow", 0))
+            if dropped:
+                raise RuntimeError(
+                    f"the rasteriser dropped {dropped:,} Gaussian-tile pairs "
+                    f"scoring view {camera.name}, so this PSNR would describe "
+                    f"max_per_tile={max_per_tile}, not the splat. Raise the "
+                    f"cap, or measure on a GPU with "
+                    f"tools/cuda_job/measure_splat.py."
+                )
             scores.append(psnr(result.rgb, camera.image))
 
     metrics = {

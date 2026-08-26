@@ -31,6 +31,7 @@ trap 'rm -f "$transcript"' EXIT
   printf 'exit\n'
 } | ssh -tt \
       -o StrictHostKeyChecking=no \
+      -o IdentitiesOnly=yes \
       -o ConnectTimeout=20 \
       -o ServerAliveInterval=30 \
       "$ADDRESS" -i "$KEY" > "$transcript" 2>&1
