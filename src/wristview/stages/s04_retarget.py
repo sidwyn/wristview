@@ -308,26 +308,56 @@ def _retarget_episode(
         else None
     )
 
-    # A clip whose selected hand changed side is not a weak episode, it is a
-    # different hand from one moment to the next. Nothing downstream can
-    # recover that, so it is rejected rather than smoothed over.
+    # A frame of the other hand is a frame of the other hand. It is not a weak
+    # measurement of this one, and nothing downstream can recover it.
+    #
+    # This used to reject the whole clip on any switch at all. real26 held 319
+    # Right frames and 6 Left, and lost all 325. Drop the minority side, the
+    # same policy the velocity gate now uses: a clip that fails on a handful of
+    # frames should lose those frames.
+    #
+    # Rejection is still right when there is no majority to keep. A clip that
+    # is genuinely two hands in equal measure has no single-hand trajectory to
+    # extract, and picking one would be arbitrary.
+    sides = np.asarray([str(x) for x in hand["hand_side"]]) if "hand_side" in hand else None
     switches = int(hand["hand_side_switches"]) if "hand_side_switches" in hand else 0
-    if switches:
-        sides = [str(x) for x in hand["hand_side"]] if "hand_side" in hand else []
-        seen = {x for x in sides if x}
-        status = {
-            "clip_id": clip_id,
-            "rejected": True,
-            "reject_reason": (
-                f"hand identity changed {switches} times between {sorted(seen)}. "
-                "The largest-box selector crossed between two hands mid-episode, "
-                "so this trajectory describes neither hand."
-            ),
-            "hand_side_switches": switches,
-        }
-        write_json(out_dir / "status.json", status)
-        log.error("%s REJECTED: %s", clip_id, status["reject_reason"])
-        return status
+    hand_wrong_side = np.zeros(len(hand_valid), dtype=bool)
+    side_report = {"switches": switches, "frames_dropped": 0, "kept_side": None}
+    if switches and sides is not None and len(sides) == len(hand_valid):
+        labelled = sides[hand_valid]
+        counts = {name: int((labelled == name).sum()) for name in set(labelled) if name}
+        if len(counts) > 1:
+            kept = max(counts, key=counts.get)
+            minority = sum(v for k, v in counts.items() if k != kept)
+            if minority >= counts[kept]:
+                status = {
+                    "clip_id": clip_id,
+                    "rejected": True,
+                    "reject_reason": (
+                        f"hand identity is split {counts}, with no majority "
+                        f"side to keep. This clip has no single-hand "
+                        f"trajectory to extract."
+                    ),
+                    "hand_side_switches": switches,
+                }
+                write_json(out_dir / "status.json", status)
+                log.error("%s REJECTED: %s", clip_id, status["reject_reason"])
+                return status
+            hand_wrong_side = hand_valid & (sides != kept)
+            hand_valid = hand_valid & ~hand_wrong_side
+            side_report = {
+                "switches": switches,
+                "frames_dropped": int(hand_wrong_side.sum()),
+                "dropped_frames": [int(i) for i in np.nonzero(hand_wrong_side)[0]],
+                "kept_side": kept,
+                "counts": counts,
+            }
+            log.warning(
+                "%s: DROPPED %d frame(s) of the %s hand, keeping %d of the %s "
+                "hand. The selector crossed between hands %d times.",
+                clip_id, int(hand_wrong_side.sum()),
+                "/".join(k for k in counts if k != kept), counts[kept], kept, switches,
+            )
 
     object_poses = np.load(estimate_dir / "object_pose.npy")
     object_valid = np.load(estimate_dir / "object_valid.npy")
@@ -403,9 +433,29 @@ def _retarget_episode(
         900.0, velocity["flagged_fraction"] * 100, velocity["longest_run"],
         velocity["max_rate_deg_s"],
     )
-    failed = [gate for gate in velocity_gates if not gate.passed]
-    if failed:
-        reason = "; ".join(f"{g.name} {g.value} against {g.threshold} {g.unit}" for g in failed)
+    # A clip that fails on a handful of frames should lose those frames, not
+    # its tail.
+    #
+    # This used to reject the whole episode whenever `hand_velocity_run`
+    # failed. real26 failed it on 5 flagged frames of 322, longest run 2
+    # against a limit of 1, and the only way past it was a manual frame_range
+    # trim. That trim cut 148 tracked frames, and Stage 4 then filled the
+    # excluded tail with a held pose, which produced 181 rendered frames of a
+    # frozen scene. One run of 2 bad frames cost two thirds of the take.
+    #
+    # So the run gate now drops rather than rejects. The flagged frames leave
+    # the measured set and are not filled: an implausible rotation is not
+    # evidence of where the hand was, and interpolating across it invents a
+    # pose that nothing measured.
+    #
+    # The fraction gate still rejects. A clip where more than
+    # HAND_OUTLIER_MAX_FRACTION of tracked frames are implausible has broken
+    # tracking, not a few bad frames, and dropping them would leave a record
+    # of what the tracker did rather than what the hand did. Thresholds are
+    # unchanged: 900 deg/s, run 1, fraction 0.05.
+    fatal = [g for g in velocity_gates if not g.passed and g.name == "hand_velocity_fraction"]
+    if fatal:
+        reason = "; ".join(f"{g.name} {g.value} against {g.threshold} {g.unit}" for g in fatal)
         status = {
             "clip_id": clip_id,
             "rejected": True,
@@ -416,16 +466,27 @@ def _retarget_episode(
         log.error("%s REJECTED: %s", clip_id, reason)
         return status
 
-    # Isolated bad frames are dropped from the measured set and filled by the
-    # same interpolation that covers a missed detection. Which frames were
-    # filled is recorded, because the export has to distinguish measurement
-    # from fill.
     hand_measured = hand_valid & ~outlier
-    hand_filled = hand_valid & outlier
-    if outlier.any():
-        log.info(
-            "%s: filling %d flagged frame(s) from neighbours, at %s",
-            clip_id, int(hand_filled.sum()), velocity["flagged_frames"],
+    hand_dropped = hand_valid & outlier
+    hand_filled = np.zeros_like(hand_valid)
+    velocity_dropped = {
+        "frames_dropped": int(hand_dropped.sum()),
+        "dropped_frames": [int(i) for i in np.nonzero(hand_dropped)[0]],
+        "longest_run": velocity["longest_run"],
+        "max_rate_deg_s": velocity["max_rate_deg_s"],
+        "run_gate_passed": bool(
+            next(g.passed for g in velocity_gates if g.name == "hand_velocity_run")
+        ),
+        "policy": (
+            "flagged frames are dropped, not filled. An implausible rotation "
+            "is not evidence of where the hand was."
+        ),
+    }
+    if hand_dropped.any():
+        log.warning(
+            "%s: DROPPED %d frame(s) above 900 deg/s, at %s. %d measured frames remain.",
+            clip_id, int(hand_dropped.sum()), velocity["flagged_frames"],
+            int(hand_measured.sum()),
         )
     hand_valid = hand_measured
 
@@ -537,6 +598,30 @@ def _retarget_episode(
             )
 
     # Fill the gaps where the hand was not detected, then smooth.
+    # Interpolating across a gap between two measurements is fair: the hand was
+    # somewhere between them. Extending the first or last measurement outward
+    # is not. `slerp_fill` clamps leading and trailing gaps to the nearest
+    # valid pose, which produces a pose that looks like every other pose and
+    # was never measured.
+    #
+    # real26 measured the hand on frames 57 to 230 and the clip ran to 438. The
+    # held pose covered 208 frames, Stage 5 rendered every one of them, and the
+    # result was 181 control-rate frames of a frozen scene that looked
+    # plausible. Mark them, so a consumer can refuse them.
+    measured = np.nonzero(hand_valid)[0]
+    pose_extrapolated = np.zeros(len(poses), dtype=bool)
+    if len(measured):
+        pose_extrapolated[: measured[0]] = True
+        pose_extrapolated[measured[-1] + 1 :] = True
+    if pose_extrapolated.any():
+        log.warning(
+            "%s: %d frame(s) lie outside the measured span %d-%d and hold a "
+            "constant pose. They are marked extrapolated and must not be "
+            "rendered as data.",
+            clip_id, int(pose_extrapolated.sum()),
+            int(measured[0]) if len(measured) else -1,
+            int(measured[-1]) if len(measured) else -1,
+        )
     poses = slerp_fill(poses, hand_valid)
     widths = np.interp(
         np.arange(len(widths)),
@@ -637,6 +722,8 @@ def _retarget_episode(
         width_video_rate=widths,
         closed_video_rate=closed,
         hand_valid=hand_valid,
+        hand_dropped=hand_dropped,
+        pose_extrapolated=pose_extrapolated,
         # Per frame, what the trajectory rests on. `hand_measured` is observed,
         # `hand_filled` is interpolated across a frame the velocity gate
         # rejected, and neither means the hand was never detected.
@@ -652,6 +739,8 @@ def _retarget_episode(
         "rejected": False,
         "roll": roll_report,
         "hand_velocity": velocity,
+        "hand_velocity_dropped": velocity_dropped,
+        "hand_side": side_report,
         "frames_filled_velocity": int(hand_filled.sum()),
         "source_fps": round(fps, 3),
         "control_rate_hz": target_hz,

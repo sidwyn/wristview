@@ -208,6 +208,7 @@ def command_run(args: argparse.Namespace) -> int:
     )
 
     stages = _parse_stage_range(args.stages)
+    ctx.record_invocation(stages)
     results = _run_stages(ctx, stages, keep_going=args.keep_going)
     _summarize(ctx, results)
 
@@ -229,6 +230,12 @@ def command_stage(args: argparse.Namespace) -> int:
     setup(root / "wristview.log", verbose=args.verbose)
 
     stages = _parse_stage_range(args.stages)
+    ctx.record_invocation(stages)
+    if overrides:
+        log.warning(
+            "config overrides in force for this run: %s. Recorded in "
+            "run_record.jsonl and in each stage's meta.json.", overrides,
+        )
     log.info("re-running stages %s in %s", stages, root)
     results = _run_stages(ctx, stages, keep_going=args.keep_going)
     _summarize(ctx, results)

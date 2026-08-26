@@ -36,6 +36,7 @@ from ..camera import Intrinsics
 from ..device import resolve as resolve_device
 from ..geometry import invert_pose, make_pose, orthonormalize, smooth_poses, transform_points
 from ..logging_setup import get
+from ..objectbox import box_mesh, resolve_dimensions, sample_colour
 from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
 
 log = get(__name__)
@@ -274,6 +275,15 @@ def _estimate_episode(
     canonical: np.ndarray | None = None
     canonical_centroid = np.zeros(3)
 
+    # Resolve the object's size before the loop. If it is not known, that is a
+    # capture problem and it should stop the stage, not produce a bodiless
+    # object that renders as a dot.
+    box_dimensions, box_dimensions_source = resolve_dimensions(
+        {**pose_cfg, **((pose_cfg.get("per_clip") or {}).get(clip_id, {}))}
+    )
+    log.info("object body: %.1f x %.1f x %.1f mm, from %s",
+             *(box_dimensions * 1000), box_dimensions_source)
+
     # The work surface, from Stage 1, and the object's measured height. Both
     # are needed to place a resting object without a depth estimate.
     from .. import carry, reprojection
@@ -421,7 +431,18 @@ def _estimate_episode(
                     target_pose = pose
                     if canonical is None:
                         canonical_centroid = pose[:3, 3]
-                        canonical = np.zeros((1, 3))
+                        # The plane solve returns a pose and no shape. This
+                        # used to record np.zeros((1, 3)), a single point, and
+                        # Stage 5 drew the object as a 5 mm dot for the whole
+                        # clip. The cube visible in those renders was the
+                        # splat's static copy, which does not move when the
+                        # operator picks the object up.
+                        #
+                        # The size is known: `object_height_m` is measured with
+                        # a ruler and the solver already uses it to place this
+                        # centre. Use the same number for the body.
+                        corners, _ = box_mesh(box_dimensions)
+                        canonical = corners
                     continue
 
             # --- metric depth (fallback) ---
@@ -714,6 +735,33 @@ def _estimate_episode(
     np.save(object_pose_path, object_poses)
     np.save(out_dir / "object_valid.npy", object_valid)
     np.save(out_dir / "object_source.npy", np.array([str(x) for x in object_source]))
+
+    box_colour, sampled_pixels = _sample_object_colour(
+        frames_dir, frame_names, masks_dir, object_valid
+    )
+    box_colour_source = (
+        f"median of {sampled_pixels} object mask pixels" if sampled_pixels
+        else "default, because no object pixels could be sampled"
+    )
+    if not sampled_pixels:
+        log.warning("%s: the object box keeps its default colour, nothing sampled", clip_id)
+    log.info("object body colour %s, from %s",
+             tuple(round(c, 3) for c in box_colour), box_colour_source)
+
+    # Record the body separately from the point cloud. Stage 5 renders this as
+    # a mesh, so the depth test occludes it against the splat and the gripper.
+    write_json(out_dir / "object_box.json", {
+        "dimensions_m": [round(float(v), 5) for v in box_dimensions],
+        "dimensions_source": box_dimensions_source,
+        "colour_rgb": [round(float(v), 4) for v in box_colour],
+        "colour_source": box_colour_source,
+        "note": (
+            "A box at the measured size, not the object's true shape. It is "
+            "the difference between an object and a marker. Replace it with a "
+            "reconstruction when one exists; Stage 5 only wants vertices and "
+            "faces."
+        ),
+    })
 
     canonical_path = None
     if canonical is not None:
@@ -1025,3 +1073,32 @@ def run(ctx: RunContext) -> dict:
 
 def load_summary(ctx: RunContext) -> dict:
     return read_json(ctx.stage_dir(STAGE, create=False) / "summary.json")
+
+
+def _sample_object_colour(frames_dir, frame_names, masks_dir, object_valid, samples: int = 12):
+    """Take the object's colour from its own pixels on a spread of frames.
+
+    Returns the colour and the number of pixels behind it. A caller that gets
+    zero must not describe the result as a measurement.
+    """
+    import cv2
+
+    indices = np.nonzero(np.asarray(object_valid))[0]
+    if not len(indices):
+        return (0.75, 0.65, 0.15), 0
+    picks = indices[np.linspace(0, len(indices) - 1, min(samples, len(indices))).astype(int)]
+    images, masks = [], []
+    for index in sorted(set(int(i) for i in picks)):
+        mask_path = Path(masks_dir) / f"{index:05d}.png"
+        frame_path = Path(frames_dir) / frame_names[index]
+        if not mask_path.exists() or not frame_path.exists():
+            continue
+        image = cv2.imread(str(frame_path))
+        mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if image is None or mask is None:
+            continue
+        images.append(cv2.cvtColor(image, cv2.COLOR_BGR2RGB))
+        masks.append(mask)
+    if not images:
+        return (0.75, 0.65, 0.15), 0
+    return sample_colour(images, masks)

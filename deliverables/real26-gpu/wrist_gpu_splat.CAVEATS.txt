@@ -12,6 +12,17 @@ THE SPLAT PASSES THE GATE
   scores this same splat at 7.21 dB and is not trusted. See MPS-RASTERISER.md.
   Trained 30,000 iterations at 1920 from an 8,810 point seed.
 
+KNOWN GAP - THE OBJECT IS ONE FLAT COLOUR
+  The object is drawn as a box at the measured size, filled with a single
+  colour: the median of its own mask pixels. On this clip that is
+  (0.357, 0.518, 0.447), a greenish grey, from 52,054 sampled pixels.
+  The real cube has six distinct bright faces.
+  This is a domain difference between arm B, which trains on these renders,
+  and arm C, which trains on real wrist footage. Any B-versus-C comparison
+  carries it, and it must be ruled out before any result that could depend on
+  object appearance is attributed to something else.
+  A Sam3D reconstruction closes it. See KNOWN-GAPS.md.
+
 CAVEAT 1 - EXTRAPOLATED VIEWPOINTS
   This is the one defect here that no code change can fix. Only a capture can.
   The scan's lowest view sits 18.2 cm above the desk.

@@ -42,6 +42,13 @@ something must fail on it, or it must not be computed.**
 | 14 | `train_gsplat.py` read `undistorted/` and `cameras_pinhole.json` from a script that was never written | that undistortion was handled | whether it ran | every GPU run so far fitted a pinhole model to radially distorted images |
 | 15 | MPS rasteriser dropped Gaussians past a per-tile cap and stored the count in an unread `_overflow` | a render | a render of the whole splat | scored the 30.46 dB GPU splat at 7.21 dB and called it broken |
 | 16 | Splat coverage taken from the depth channel of an external render | that a ray met something | whether a surface was there | read 100 per cent where alpha was 0.911, min 0.625 |
+| 17 | Stage 3's plane branch recorded the object as `np.zeros((1, 3))` | that an object pose existed | the object's shape | every wrist view drew a 5 mm dot; no clip ever contained a moving object |
+| 18 | Velocity gate rejected the whole clip on a failed run gate | that some frames were implausible | which frames were implausible | 5 bad frames of 322 cost 148 tracked frames and forced a manual trim |
+| 19 | Hand-identity gate rejected the whole clip on any side switch | that two hands appeared | which frames belonged to which hand | 6 Left frames of 325 discarded all 325 |
+| 20 | `slerp_fill` held the last measured pose across the unmeasured tail | a pose for every frame | a pose only where the hand was seen | 181 rendered frames with bit-identical camera poses, none of them data |
+| 21 | Stage 5 read `hand_valid` in neither branch | that a pose existed for the frame | whether anything measured that pose | drew all 387 frames including 181 frozen ones |
+| 22 | `--set` overrides reached no file in the run directory | the config on disk | the config that actually ran | a 57-231 trim was invisible; explaining its effect needed a stage re-run |
+| 23 | `StageMeta.to_dict` hand-listed its fields | the fields someone remembered to list | the record's contents | a new `config_overrides` field was dropped in silence the day it was added |
 
 ## Row 7, in detail
 
@@ -177,3 +184,57 @@ wherever any Gaussian contributes at all. Stage 5 reported 100 per cent coverage
 on frames whose mean alpha was 0.911 and whose minimum was 0.625. The fix was to
 carry alpha back from the pod and apply the same `alpha > 0.35` rule the local
 path always used. Coverage now reads 94 per cent.
+
+
+## Rows 17 to 23, in detail
+
+These came out of one question about a contact sheet. The numbers had all
+passed.
+
+**Row 17 is the worst defect in the project so far.** `s03_estimate.py:424`
+recorded the object model as a single point at the origin whenever the plane
+solve produced the pose, which is the normal path. Stage 5 drew that point with
+`rasterize_points` at a 5 mm radius, five to thirteen pixels wide depending on
+range. So every wrist view this project has ever rendered contained a dot where
+the object should be. The cube that made the renders look right was the splat's
+own copy of it, frozen at its scan position, which does not move when the
+operator picks the object up.
+
+A policy trained on those frames cannot learn manipulation. It sees a static
+scene and a marker. No metric caught it: the object pose was correct, the
+object was drawn, `object_track_rate` was high, and `object_model_points` was
+recorded as 1 and never compared to anything.
+
+Stage 3 now writes a box at the measured size with a colour sampled from the
+object's own mask pixels, and Stage 5 rasterises it as a mesh so the existing
+depth test occludes it correctly. Stage 5 refuses a one-point model rather than
+drawing a marker and calling it manipulation data.
+
+**Rows 18 and 19 are the same mistake twice.** Both gates were right that
+something was wrong and wrong about the remedy. A gate that cannot say which
+frames failed can only reject everything, and rejecting everything makes the
+operator reach for a manual trim, which is how real26 lost its tail. Both now
+drop the offending frames and report exactly which. Row 19 still rejects when
+no majority side exists, because then there is no single-hand trajectory to
+extract and picking one would be arbitrary. No threshold moved.
+
+**Rows 20 and 21 compound.** `slerp_fill` clamps leading and trailing gaps to
+the nearest valid pose, which is correct for interpolation and wrong at the
+ends: it extends a measurement outward into frames where nothing was measured.
+Stage 4 did that, and Stage 5 then rendered the result without ever consulting
+`hand_valid` in either branch. real26 produced 181 control-rate frames in which
+the camera did not move by a single bit, and every downstream number described
+them as ordinary frames.
+
+**Rows 22 and 23 are about the record rather than the data.** `--set` does not
+reach `config.yaml`, the `stage` subcommand never rewrites that file, and no
+`meta.json` held the overrides, so a run directory could not say what produced
+it. The 57-231 trim that caused the frozen tail left no trace anywhere and took
+a re-run of Stage 4 to identify. Invocations now append to `run_record.jsonl`,
+deliberately not by rewriting `config.yaml`: making a one-off override sticky
+for every later stage loses the trail a different way.
+
+Row 23 arrived the same hour. `StageMeta.to_dict` builds its payload by naming
+each field, so the `config_overrides` field added for row 22 was written to the
+dataclass, carried through the code, and dropped on the way to disk. The test
+for row 22 is what caught it, one commit after the fix it was testing.

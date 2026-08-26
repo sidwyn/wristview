@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import platform
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -73,6 +74,7 @@ class StageMeta:
     backends: dict[str, str] = field(default_factory=dict)
     git_sha: str = ""
     config_hash: str = ""
+    config_overrides: dict[str, Any] = field(default_factory=dict)
     platform: str = ""
     started_at: float = 0.0
     finished_at: float = 0.0
@@ -84,6 +86,9 @@ class StageMeta:
             "status": self.status,
             "git_sha": self.git_sha,
             "config_hash": self.config_hash,
+            # What `--set` changed for this stage. Without it a run directory
+            # cannot say why its numbers differ from the config beside them.
+            "config_overrides": self.config_overrides,
             "platform": self.platform,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -115,6 +120,33 @@ class RunContext:
         ctx = cls(root=root, config=config, run_id=run_id)
         config.write(ctx.root / "config.yaml")
         return ctx
+
+    def record_invocation(self, stages: list[int] | None = None) -> Path:
+        """Append what was run, and with which overrides, to the run record.
+
+        `--set` used to leave no trace. It does not reach `config.yaml`, which
+        the `stage` subcommand never rewrites, and it did not reach any
+        `meta.json`. So a run directory could not answer what produced it.
+
+        This log is append-only on purpose. Rewriting `config.yaml` with the
+        overrides would make a one-off setting sticky for every later stage,
+        which is a different way to lose track of what happened.
+        """
+        record = {
+            "at": time.time(),
+            "run_id": self.run_id,
+            "stages": stages,
+            "git_sha": self.git_sha,
+            "config_hash": self.config.hash,
+            "config_source": str(self.config.source_path) if self.config.source_path else None,
+            "overrides": dict(getattr(self.config, "overrides", {}) or {}),
+            "argv": sys.argv[1:],
+            "platform": self.platform,
+        }
+        path = self.root / "run_record.jsonl"
+        with open(path, "a") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+        return path
 
     def stage_dir(self, stage: int, create: bool = True) -> Path:
         path = self.root / STAGE_DIRS[stage]
@@ -157,6 +189,7 @@ class StageRecorder:
             name=name,
             git_sha=ctx.git_sha,
             config_hash=ctx.config.hash,
+            config_overrides=dict(getattr(ctx.config, "overrides", {}) or {}),
             platform=ctx.platform,
             started_at=time.time(),
         )

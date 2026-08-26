@@ -92,6 +92,13 @@ When you add a metric, make something read it and act on it.
   exist, and was ignored in silence.
 - `init_points` was a ceiling, not a target. It is fixed. Check any other
   parameter that reads like a target.
+- `object_height_m` was 0.0762 from the first commit, which is exactly 3
+  inches. The cube is 70 mm. A stale imperial constant survives because a cube
+  of the wrong size still sits on the desk and no check compares it to the
+  object. Measure the object for every session.
+- Watch for any default that is a round number in the wrong unit. 0.0762 m is
+  3 in, 0.15 m is not a marker this project owns. A tidy imperial value in a
+  metric field is almost always inherited, not measured.
 
 ## Marker ids
 

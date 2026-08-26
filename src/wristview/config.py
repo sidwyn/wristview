@@ -73,6 +73,12 @@ class Config:
 
     data: dict[str, Any] = field(default_factory=dict)
     source_path: Path | None = None
+    # What `--set` changed, kept so the run record can say so. A run whose
+    # config.yaml does not mention an override cannot be reconstructed from
+    # its own directory: real26's 57 to 231 retarget trim left no trace
+    # anywhere in the run, and the frozen tail it produced took a re-run of
+    # Stage 4 to explain.
+    overrides: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: str | Path | None = None, overrides: dict[str, Any] | None = None) -> Config:
@@ -100,7 +106,7 @@ class Config:
                 )
             data = _deep_merge(data, overrides)
 
-        return cls(data=data, source_path=source)
+        return cls(data=data, source_path=source, overrides=dict(overrides or {}))
 
     def get(self, dotted_key: str, default: Any = None) -> Any:
         """Read a nested value with a dotted path, for example `ingest.scan_fps`."""

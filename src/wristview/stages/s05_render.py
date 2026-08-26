@@ -26,6 +26,7 @@ import cv2
 import numpy as np
 import torch
 
+from .. import objectbox
 from ..backends import gripper as gripper_backend
 from ..backends import mesh_render
 from ..backends.splat_mps import render as splat_render
@@ -65,16 +66,51 @@ def _render_episode(
     # the action stream is at the control rate. At 60 fps input and 15 Hz
     # control that is a quarter of the frames for the same dataset.
     rate = str(cfg.get("sample_rate", "control"))
+    source_fps_value = float(trajectory["source_fps"])
     if rate == "video":
         ee_poses = trajectory["poses_video_rate"]
         widths = trajectory["width_video_rate"]
         closed = trajectory["closed_video_rate"]
-        timestamps = np.arange(len(ee_poses)) / float(trajectory["source_fps"])
+        timestamps = np.arange(len(ee_poses)) / source_fps_value
+        renderable = trajectory["hand_valid"].astype(bool)
     else:
         ee_poses = trajectory["poses"]
         widths = trajectory["width_m"]
         closed = trajectory["closed"]
         timestamps = trajectory["timestamps_s"]
+        # The control-rate poses are resampled from the video rate, so validity
+        # has to be resampled the same way.
+        video_valid = trajectory["hand_valid"].astype(bool)
+        renderable = video_valid[
+            np.clip(np.round(timestamps * source_fps_value).astype(int),
+                    0, len(video_valid) - 1)
+        ]
+
+    # Render measured frames only.
+    #
+    # Neither branch used to read `hand_valid`. Stage 4 held the last measured
+    # pose across every frame after tracking stopped, and Stage 5 drew all of
+    # them: real26 produced 181 control-rate frames in which the camera did not
+    # move by a single bit, and nothing in the output said so. A frame with no
+    # measurement behind it is not data, and rendering it makes it look like
+    # data.
+    excluded = int((~renderable).sum())
+    if not renderable.any():
+        raise RuntimeError(
+            f"{clip_id}: no frame has a hand measurement behind it, so there "
+            f"is nothing to render."
+        )
+    if excluded:
+        log.warning(
+            "%s: rendering %d of %d frames. %d have no hand measurement and "
+            "are excluded, not drawn.",
+            clip_id, int(renderable.sum()), len(renderable), excluded,
+        )
+    render_index = np.nonzero(renderable)[0]
+    ee_poses = ee_poses[renderable]
+    widths = widths[renderable]
+    closed = closed[renderable]
+    timestamps = timestamps[renderable]
 
     limit = int(cfg.get("max_frames", 0) or 0)
     if limit and len(ee_poses) > limit:
@@ -145,6 +181,29 @@ def _render_episode(
     if cfg.get("camera_model", "pinhole") == "fisheye":
         maps = fisheye_maps(intrinsics, list(cfg.get("fisheye_coeffs", [0.0, 0.0, 0.0, 0.0])))
 
+    # The object's body, written by Stage 3 next to its pose.
+    object_box = None
+    object_colour = (0.75, 0.65, 0.15)
+    box_path = estimate_dir / "object_box.json"
+    if box_path.exists():
+        box = read_json(box_path)
+        object_box = objectbox.box_mesh(box["dimensions_m"])
+        object_colour = tuple(box["colour_rgb"])
+        log.info(
+            "%s: object body %s mm, colour from %s",
+            clip_id,
+            " x ".join(f"{v * 1000:.1f}" for v in box["dimensions_m"]),
+            box.get("colour_source", "unknown"),
+        )
+    elif object_model is not None and len(object_model) <= 1:
+        # A one point model renders as a dot and looks like a tracked object.
+        # Refuse rather than draw a marker and call it manipulation data.
+        raise RuntimeError(
+            f"{clip_id}: the object model holds {len(object_model)} point and "
+            f"there is no object_box.json beside it, so the object would "
+            f"render as a dot. Re-run Stage 3, which now writes a body."
+        )
+
     draw_gripper = bool(cfg.get("draw_gripper", True))
     draw_object = bool(cfg.get("draw_object", True)) and object_model is not None
 
@@ -200,13 +259,32 @@ def _render_episode(
         layers = [(splat_color, splat_depth)]
 
         # --- object ---
+        #
+        # Draw a body, not a marker. This used to call `rasterize_points` on
+        # `object_model.npy`, which the plane-solve branch of Stage 3 filled
+        # with a single point at the origin, so the object appeared as a 5 mm
+        # dot on every frame of every clip. The cube that looked like the
+        # object was the splat's static copy of it.
+        #
+        # As a mesh it occludes correctly: `composite` already resolves the
+        # layers by depth, so the box hides the splat behind it and the gripper
+        # jaws hide the box when they pass in front.
         if draw_object and object_valid[index]:
-            posed = transform_points(object_poses[index], object_model)
-            object_color, object_depth = mesh_render.rasterize_points(
-                posed, None, view_matrix,
-                intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy,
-                width, height, point_radius_m=0.005, near=near,
-            )
+            if object_box is not None:
+                vertices, faces = object_box
+                posed = transform_points(object_poses[index], vertices)
+                object_color, object_depth = mesh_render.rasterize_mesh(
+                    posed, faces, view_matrix,
+                    intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy,
+                    width, height, color=object_colour, near=near,
+                )
+            else:
+                posed = transform_points(object_poses[index], object_model)
+                object_color, object_depth = mesh_render.rasterize_points(
+                    posed, None, view_matrix,
+                    intrinsics.fx, intrinsics.fy, intrinsics.cx, intrinsics.cy,
+                    width, height, point_radius_m=0.005, near=near,
+                )
             layers.append((object_color, object_depth))
 
         # --- gripper ---
@@ -262,6 +340,8 @@ def _render_episode(
         "gripper_drawn": draw_gripper,
         "object_drawn": bool(draw_object),
         "closed_frames": int(closed.sum()),
+        "frames_excluded_no_measurement": excluded,
+        "source_frame_index": [int(i) for i in render_index],
         "frames_dir": ctx.rel(wrist_dir),
         "preview": ctx.rel(preview) if preview else None,
     }

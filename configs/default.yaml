@@ -260,7 +260,18 @@ estimate:
     # needs, and it replaces the monocular depth path entirely. Set to 0 to
     # fall back to depth, which is what floated session 4's cube 85 mm above a
     # desk it was resting on while reporting a 1.1 mm residual.
-    object_height_m: 0.0762
+    # The cube this project shoots is 70 mm. Measure it, do not inherit it.
+    #
+    # This read 0.0762 from the first commit, which is exactly 3 inches: a
+    # stale value from an earlier cube. It is 8.9 per cent larger than the real
+    # object, and because the plane solve places the centre at
+    # `offset + height / 2` a wrong height moves the object as well as sizing
+    # it. Nothing complains, because a cube of the wrong size on a desk still
+    # sits on the desk.
+    object_height_m: 0.070
+    # The rendered body. Defaults to a cube of `object_height_m` when null.
+    # Set all three when the object is not a cube.
+    object_dimensions_m: [0.070, 0.070, 0.070]
     # Per clip, because one set can hold several objects and different clips
     # manipulate different ones. Session 6 proved the need: with a single
     # prompt the detector locked onto the bin, which nobody ever moved.
