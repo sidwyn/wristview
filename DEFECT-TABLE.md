@@ -54,6 +54,7 @@ something must fail on it, or it must not be computed.**
 | 26 | Blur threshold taken from the whole clip's median | the average sharpness of a mixed scan | whether a frame is soft for its own pass | appending a sharp pass cost the low pass 18 frames and raised the floor 8.47 to 12.15 cm on identical footage |
 | 27 | Grounding DINO's argmax box returned whatever scored highest | the best-scoring box | whether anything was found | a 98 per cent-of-frame box read as "the carton is in every scan frame" when it was not on the mat |
 | 28 | Scan height measured from marker-visible frames only | the frames that can see a flat marker | how low the camera went | a frame below 30 cm is 0.15x as likely to show the marker; 45.7 per cent true reads as 11.4 per cent |
+| 29 | The marker is treated as always available | that a fiducial was placed | whether anything can see it | id 0 found in 14 of 30 demo first frames; the scan render-band check unmeasurable on two scans running |
 
 ## Row 7, in detail
 
@@ -377,3 +378,50 @@ marker standing VERTICAL beside the mat stays visible from the low
 across-the-mat views and gives the same height and azimuth from one PnP solve.
 Until that exists the honest pre-flight is checks 1 to 3, and the render band
 is confirmed after Stage 1 with `close_range_coverage`.
+
+
+## Row 29, in detail
+
+Row 28 said marker visibility biases WHICH frames can be measured. Row 29 is
+the blunter problem underneath it: often nothing can be measured at all,
+because the marker is not detectable in the frame.
+
+Measured on real27, at full 1920x1080:
+
+- ArUco id 0 was detected in **14 of the 30 demo first frames**. 16 gave
+  nothing.
+- On the scan, id 0 appeared in 72 of 408 sampled frames, 18 per cent, under
+  the 30 per cent floor `check_take` needs. The same was true of the first
+  scan at 47 per cent measured but biased. **Two scans in sequence could not
+  be checked for render-band coverage**, which is the single question those
+  scans were re-shot to answer.
+
+Two causes are visible in the frames themselves, and they are different:
+
+1. **take02: occlusion.** The carton stands between the camera and the marker
+   and hides its lower edge. A start spot sits on the sight line.
+2. **take13: contrast at the border.** The marker is not hidden and detection
+   still fails. Two black clips lie on the left and right edges of the printed
+   square. ArUco needs the quiet zone around the pattern to be clean; anything
+   crossing the border can break the quad fit even when the pattern itself is
+   perfectly visible.
+
+Neither is a code fault, and neither stops this session: scale comes from the
+scan, and workspace segment detection uses the scan-match count rather than
+marker visibility, which is defect 6's fix still holding.
+
+**A method note that belongs with the row.** The first marker test ran on
+480 px wide frames and reported 0 of 30 detections. The same test at
+1920x1080 reported 14 of 30. The first number described the test, not the
+takes. `check_take` hit the same thing from the other direction: 19 per cent
+detection at 960 px, 47 per cent at 1280, 31 per cent at full 1920. ArUco
+detection rate is not monotonic in resolution, so any claim about marker
+visibility has to state the resolution it was measured at.
+
+Fix before the next session, in the capture and not in the code:
+
+- Nothing may touch the printed square or its white border.
+- No start spot may sit between the camera and the marker.
+- Stand a second marker VERTICAL beside the mat, on a different id, so the
+  low across-the-mat views that the render band is made of have something to
+  measure against.
