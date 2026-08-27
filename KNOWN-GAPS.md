@@ -48,6 +48,60 @@ caveats file beside every render.
 
 ---
 
+## Soft training views damage the whole splat, not just their own region
+
+**Settled 2026-08-27, real26/d. This was speculated about for three sessions
+and is now measured.**
+
+A blurry training view does not only fail to reproduce itself. The Gaussians it
+pulls on are shared with sharp views, so it costs sharpness everywhere.
+
+Two splats of the same scene, differing only in how many low-pass frames
+reached training. The per-pass blur fix recovered 63 more of them, 207 to 270.
+
+| training view height | 586 views | 731 views | change |
+|---|---|---|---|
+| 45-100 cm | 27.94 dB | 23.66 dB | **-4.28** |
+| 30-45 cm | 28.63 dB | 24.96 dB | **-3.67** |
+| 20-30 cm | 28.16 dB | 25.71 dB | -2.45 |
+| 15-20 cm | 27.51 dB | 24.81 dB | -2.70 |
+| 12-15 cm | 24.81 dB | 23.98 dB | -0.83 |
+| 0-10 cm | 18.14 dB | 18.42 dB | +0.28 |
+| **all views** | **27.82 dB** | **24.59 dB** | **-3.23** |
+
+**The decisive number is the top row.** The 45-100 cm band holds 7 low-pass
+views out of 153. It is as far from the soft frames as any band in the scan,
+and it lost 4.28 dB.
+
+The competing explanation is a thinner Gaussian budget per view, and it does not
+fit: Gaussians per view fell only 6 per cent, 8,531 to 8,020, while the loss
+was 3 to 4 dB. A 6 per cent budget change does not cost 4 dB.
+
+### The companion rule
+
+`ingest.scan_pass_boundaries_s` judges each pass against its own median, and
+that is correct: a close pass is soft because the lens cannot focus that near,
+not because its frames are faulty, and judging it against a sharp pass's median
+discards it for the wrong reason. Defect row 26.
+
+But the fix is not free, and it must not be read as one.
+
+**Recovering blurry frames buys coverage and spends sharpness, everywhere.**
+Each recovered soft view improves the region only it can see and degrades every
+region, including regions it never observed. So:
+
+- Recover soft frames when the alternative is no coverage at all. real26/a
+  rendered 47 per cent of its frames below the scan floor; that is worth 3 dB.
+- Do not recover them to improve coverage that already exists. Once a region
+  has sharp views, adding soft ones there is a pure loss.
+- The per-pass threshold decides which frames are soft *for their pass*. It
+  does not decide whether that pass should be in the training set at all. That
+  is a separate judgement and nothing currently makes it.
+
+Measured cost on real26: the third pass moved the viewpoint gate from 15.05 cm
+to 7.47 cm and the floor from 8.47 cm to 3.52 cm, and cost 3.23 dB overall,
+which put the splat under the 25 dB gate. Both are real. Neither dominates.
+
 ## Splat quality: the lever is Gaussians, not views
 
 **Observed** on real26/bm, 2026-08-26.

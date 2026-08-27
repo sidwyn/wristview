@@ -407,3 +407,80 @@ python -m wristview.cli run --scan ... --out /tmp/wristview-runs
 
 This costs a full matching pass every time it is forgotten, and the error names
 SQLite rather than iCloud, so it does not look like a storage problem.
+
+
+---
+
+# What a 20-episode session costs
+
+Measured on real26, not estimated. One 68 s scan, two 25 to 31 s demos, a
+586-view reconstruction and a 30,000 iteration splat on a rented RTX 4090.
+
+## Shooting
+
+| | time |
+|---|---|
+| set up: mat, marker, object, camera check | 15 min |
+| scan, three passes plus retakes | 5 min |
+| 20 episodes at about 30 s each, plus resets | 40 min |
+| pre-flight on two episodes before you strike the set | 5 min |
+| **total in the room** | **about 65 min** |
+
+Shoot every episode against **one** scan. The scan is the expensive artifact
+and it is reusable across every episode that does not move the furniture. If
+the desk changes, that is a new session, not a new episode.
+
+## Processing
+
+**Per session, once:**
+
+| | time | cost |
+|---|---|---|
+| Stage 0 scan ingest | 8 min | free |
+| Stage 1 SfM, 586 views | 42 min | free |
+| splat train and gate on a 4090 | 35 min | about $0.60 |
+| **fixed total** | **85 min** | **$0.60** |
+
+**Per episode, marginal:**
+
+| | time |
+|---|---|
+| Stage 0 ingest | 1 min |
+| **Stage 2 localise** | **15.5 min** |
+| Stage 3 estimate, WiLoR and SAM | 4.7 min |
+| Stage 4 retarget | under 1 s |
+| Stage 5 render and composite | 1.2 min |
+| **total** | **22.4 min** |
+
+## Where the cost actually goes
+
+| episodes | wall clock | per episode |
+|---|---|---|
+| 1 | 1.8 h | 107 min |
+| 5 | 3.3 h | 39 min |
+| 10 | 5.1 h | 31 min |
+| **20** | **8.9 h** | **27 min** |
+| 50 | 20.1 h | 24 min |
+
+**Stage 2 is 69 per cent of the marginal cost and it is the only number worth
+attacking.** It matches every demo frame against the scan with SuperPoint and
+LightGlue on MPS: 4,320 pairs for a 432-frame demo at about 200 ms a pair.
+Everything else together is 7 minutes an episode.
+
+The GPU is not the problem. It is $0.60 for the whole session regardless of
+episode count, because the splat is shot once. A 20-episode session costs about
+**$0.60 of GPU and 9 hours of laptop**, and 7 of those 9 hours are Stage 2.
+
+Three ways to cut it, none yet done:
+
+1. **Fewer retrieved scan frames per demo frame.** `retrieval_top_k` is 10.
+   At 5 the pair count halves. Registration was 100 per cent with a median 91
+   per cent inlier ratio, so there is margin to spend.
+2. **Batch LightGlue across pairs.** It runs one pair at a time on MPS.
+3. **Run Stage 2 on the GPU with the splat.** It is the same match-and-PnP
+   work and CUDA does it several times faster, but it means shipping the demo
+   frames, which is the largest payload.
+
+Overnight is the practical unit: shoot in the evening, process while asleep,
+review in the morning. 20 episodes fits comfortably. 50 does not fit in one
+night at 20 hours, so split the processing or fix Stage 2 first.
