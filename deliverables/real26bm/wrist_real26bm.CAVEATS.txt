@@ -1,0 +1,72 @@
+real26/bm wrist view, demo_0 (the head-camera-only take, arms A and B).
+Produced 2026-08-26. 351 frames at 640x360, control rate, fisheye.
+
+THE SPLAT PASSES THE GATE
+  4,998,950 Gaussians over 586 registered views, 8,531 per view.
+  Rendered from registered scan poses by gsplat on CUDA, the authoritative
+  renderer: 27.82 dB median over all 586 views, p10 23.60. Gate needs 25 dB.
+  Trained 30,000 iterations at 1920 from a 40,867 point seed.
+
+CAVEAT 1 - EXTRAPOLATED VIEWPOINTS, AND THIS IS THE WEAKEST THIS HAS BEEN
+  The median rendered frame sits 15.05 cm from the nearest view that ever saw
+  the scene, against a 15.00 cm limit. It fails by half a millimetre.
+  p90 24.44 cm.
+  0 PER CENT of frames sit below the scan floor, which is 8.47 cm.
+  real26/a was 47 per cent below its 18.18 cm floor. That problem is gone.
+  render.allow_extrapolation was set for this run only, recorded in
+  run_record.jsonl and in 05_render/meta.json. It is not in the config.
+
+  The cause is not scan depth. The scan covered 8 to 23 cm and 30 to 57 cm and
+  skipped 20 to 30 cm, which is where the wrist camera sits at the 0.25 m UMI
+  standoff. Covering the extremes and missing the middle is what this gate is
+  reporting. A 20 s mid-height pass closes it honestly. See CAPTURE-SOP.md,
+  "SCAN FROM WHERE YOU WILL RENDER FROM".
+
+KNOWN GAP - THE OBJECT IS ONE FLAT COLOUR
+  The object is a 70.0 x 70.0 x 70.0 mm box filled with a single colour: the
+  median of its own mask pixels, (0.443, 0.506, 0.235), from 98,569 pixels.
+  The real cube has six distinct bright faces.
+  This is a domain difference between arm B, which trains on these renders,
+  and arm C, which trains on real wrist footage. Any B-versus-C comparison
+  carries it and it must be ruled out before any result that could depend on
+  object appearance is attributed to something else. It cannot be ruled out by
+  looking at the trajectories, because the trajectories are the same.
+  A Sam3D reconstruction closes it. See KNOWN-GAPS.md.
+
+TWO CUBES ARE VISIBLE, AND THIS IS EXPECTED
+  The splat contains the cube at the position it held during the scan, frozen.
+  Stage 5 draws the tracked cube on top, at its moving pose. Both appear.
+  Where the tracked cube has moved away from its scan position, the render
+  shows the drawn box in one place and the splat's ghost in another.
+  The object travels 36.1 cm across this clip, so the two are far apart for
+  most of it. Nothing is wrong; a splat is a static reconstruction and cannot
+  remove an object that moved after it was built.
+  Removing the ghost needs the object masked out of the scan frames before
+  training. Not done, and not currently planned.
+
+WHAT IS MEASURED
+  Splat coverage 76.5 per cent mean, 38.0 per cent minimum, from alpha.
+  Frames excluded for having no hand measurement: 0 of 351.
+  Wrist camera height above the desk: 14.28 min, 25.09 median, 30.62 max cm.
+  standoff_m 0.25, the UMI placement, now a required parameter.
+
+UPSTREAM, FOR THIS CLIP
+  Stage 2: 432/432 registered, median inliers 741 of 799 (91 per cent).
+    Marker agreed with the recovered pose to 1.04 cm and 1.16 deg median over
+    183 frames. The marker does not take part in computing those poses, so
+    that is independent confirmation.
+  Stage 3: hand on 432/432 frames, identity Right throughout. Object tracked
+    on 431/432. Hand reprojection 13.20 px median, 14.83 p90, independent.
+  Stage 4: 0 velocity outliers of 432, peak 357.6 deg/s against a 900 limit.
+    0 frames dropped. 0 frames held a constant pose.
+
+NOT IN THIS RENDER
+  demo_1, the take with the wrist camera (arm C), is not rendered. Its object
+  track is invalid: the detector found nothing until frame 352, so the resting
+  pose was measured after the release and the carried object solved to 7.06 cm
+  BELOW the desk across 109 frames. Defect row 24. Arm C is unaffected,
+  because arm C uses the real wrist footage, not a render.
+
+PROVENANCE
+  Payload sha256 4efb336c..., splat.pt sha256 c2926cc9...,
+  wrist renders sha256 d75874aa..., each verified on both ends.

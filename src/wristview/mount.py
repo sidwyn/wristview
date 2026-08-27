@@ -43,29 +43,49 @@ def wrist_camera_offset(config: dict) -> np.ndarray:
                        values push the finger tips lower in frame.
         grasp_offset_m distance from the gripper origin to the finger tips
                        along +z. Matches retarget.origin_offset_m.
-        standoff_m     when set, the mount is scaled so the camera sits exactly
-                       this far from the finger tips, keeping the direction and
-                       the framing. This is the one knob worth turning, because
-                       it has to be matched to the scan, not chosen by eye: the
-                       splat can only be sharp where training views actually
-                       were. Session 4 measured a median camera-to-surface
-                       distance of 0.264 m in its closest pass, with 2 frames
-                       under 0.15 m, so 0.25 m is where the data supports a
-                       render and 0.15 m is not.
+        standoff_m     REQUIRED. How far the camera sits from the finger tips.
+                       The mount is scaled to this, keeping the direction and
+                       the framing.
+
+    `standoff_m` has no default and no fallback.
+
+    It was optional, and null. Stage 4 warned that the wrist camera therefore
+    could not be checked, and the warning fired on every take of real06b and
+    real26 without stopping anything. An unset physical quantity is the trap
+    this project keeps falling into: a distance the rig decides is not a
+    distance the code may invent. Rule 6 in CLAUDE.md.
+
+    0.25 m is the placement the UMI rig uses and it is what this project
+    renders at. It was raised to 0.35 m once, as a workaround for an 18 cm
+    scan floor, which traded framing for coverage. That is no longer needed:
+    real26/bm's floor is 8.47 cm. Do not raise it again to hide a scan.
     """
+    if config.get("standoff_m") is None:
+        raise ValueError(
+            "render.wrist_camera.standoff_m is not set. It is the distance "
+            "from the finger tips to the camera and the rig decides it, so "
+            "there is no default. Set it to 0.25 for the UMI placement. It "
+            "was optional until real26/bm, and every run since real06b "
+            "carried a warning that the wrist camera could not be checked."
+        )
+    standoff = float(config["standoff_m"])
+    if not 0.05 <= standoff <= 1.0:
+        raise ValueError(
+            f"render.wrist_camera.standoff_m is {standoff} m, outside 0.05 to "
+            f"1.0 m. That is not a wrist camera mount."
+        )
+
     back = float(config.get("mount_back_m", 0.12))
     up = float(config.get("mount_up_m", 0.07))
     aim_ahead = float(config.get("aim_ahead_m", 0.06))
 
-    standoff = config.get("standoff_m")
-    if standoff is not None:
-        # Scale the whole mount, so framing is preserved and only the distance
-        # changes. Without scaling aim_ahead too, moving the camera back would
-        # also swing the finger tips up the frame.
-        current = float(np.hypot(back, up))
-        if current > 1e-9:
-            factor = float(standoff) / current
-            back, up, aim_ahead = back * factor, up * factor, aim_ahead * factor
+    # Scale the whole mount, so framing is preserved and only the distance
+    # changes. Without scaling aim_ahead too, moving the camera back would
+    # also swing the finger tips up the frame.
+    current = float(np.hypot(back, up))
+    if current > 1e-9:
+        factor = standoff / current
+        back, up, aim_ahead = back * factor, up * factor, aim_ahead * factor
     grasp_offset = float(config.get("grasp_offset_m", 0.02))
 
     # Everything is expressed in the gripper frame, so the axes are the

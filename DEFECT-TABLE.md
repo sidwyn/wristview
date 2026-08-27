@@ -49,6 +49,8 @@ something must fail on it, or it must not be computed.**
 | 21 | Stage 5 read `hand_valid` in neither branch | that a pose existed for the frame | whether anything measured that pose | drew all 387 frames including 181 frozen ones |
 | 22 | `--set` overrides reached no file in the run directory | the config on disk | the config that actually ran | a 57-231 trim was invisible; explaining its effect needed a stage re-run |
 | 23 | `StageMeta.to_dict` hand-listed its fields | the fields someone remembered to list | the record's contents | a new `config_overrides` field was dropped in silence the day it was added |
+| 24 | `resting_pose` returned the first sustained still run | that the object was still somewhere | whether it was still BEFORE the grasp | real26/bm demo_1 measured the rest position 117 frames after the release and carried the object 7 cm under the desk |
+| 25 | `render.wrist_camera.standoff_m` was optional and null | nothing, and warned about it | the camera-to-fingertip distance the rig sets | every take of real06b and real26 shipped with the wrist camera unchecked |
 
 ## Row 7, in detail
 
@@ -238,3 +240,38 @@ Row 23 arrived the same hour. `StageMeta.to_dict` builds its payload by naming
 each field, so the `config_overrides` field added for row 22 was written to the
 dataclass, carried through the code, and dropped on the way to disk. The test
 for row 22 is what caught it, one commit after the fix it was testing.
+
+
+## Rows 24 and 25, in detail
+
+Row 24 is the family exactly: a function computed a plausible answer from the
+wrong window, and nothing read whether the window was valid.
+
+`carry.resting_pose` finds where the object sat before a hand lifted it, by
+taking the first sustained still run. `carry.solve_carried` then attaches the
+object to the hand at the contact frame using that position. The docstring is
+explicit about why the order matters: contact is decided while the object still
+rests, because the plane solve is reliable at that moment, and that breaks the
+circular dependency between contact and the carried pose.
+
+Neither function checks the order it depends on.
+
+On real26/bm demo_1 the object detector found nothing until frame 352.
+`resting_pose` returned `rest_run [360, 510]`, which is after the release, and
+`solve_carried` used it to attach the object at contact frame 243. The rest
+position it measured was a different place on the mat, 117 frames later. The
+carried object came out at a median of 7.06 cm BELOW the desk surface, across
+109 frames, and nothing in Stage 3 or Stage 4 objected. Stage 4 reported the
+clip as healthy: 510 of 510 registered, hand on every frame, zero velocity
+outliers, zero dropped frames.
+
+The fix is one comparison: the still run must end before the first contact
+frame, or there is no valid resting pose and the carry cannot be solved.
+
+Row 25 is rule 6 in CLAUDE.md, a fourth time. `standoff_m` sets how far the
+wrist camera sits from the finger tips and the rig decides it. It was optional
+and shipped null, so Stage 4 warned that the wrist camera could not be checked,
+on every take of real06b and real26, and nothing stopped. It now raises when
+unset and rejects a value outside 0.05 to 1.0 m. `configs/default.yaml` carries
+0.25 m, the UMI placement, with a note that the 0.35 m it once held was a
+workaround for an 18 cm scan floor and must not be used to hide a scan again.

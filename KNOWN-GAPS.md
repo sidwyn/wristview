@@ -44,3 +44,48 @@ is Harry's item 2.
 caveats file beside every render.
 
 **First recorded** 2026-08-26, real26.
+
+
+---
+
+## Splat quality: the lever is Gaussians, not views
+
+**Observed** on real26/bm, 2026-08-26.
+
+| | real26/a | real26/bm |
+|---|---|---|
+| registered training views | 298 | 586 |
+| Gaussians | 3,912,607 | 4,998,950 |
+| **Gaussians per view** | **13,130** | **8,531** |
+| gate PSNR, gsplat | 30.57 dB (12 views) | 27.82 dB (586 views) |
+
+The merged scan scores 2.75 dB lower. Two explanations fit and this session
+cannot separate them:
+
+1. The low pass is blurry, and soft training views smear Gaussians that sharp
+   views also depend on.
+2. The same Gaussian budget is spread across twice the views, so each view gets
+   fewer Gaussians to reproduce it.
+
+Separating them needs a control: the same scan retrained without the low-pass
+frames. That was priced at about $0.50 and 40 minutes and deliberately not
+run, because the 22 views below 12 cm are the only ones that see the desk from
+where the wrist camera actually is, and cutting them costs 30 per cent of
+usable render frames to chase a couple of dB in bands already at 28 dB and
+already passing the gate.
+
+What the numbers do support: **the per-view budget fell by 35 per cent while
+the view count doubled.** gsplat's `DefaultStrategy` grows the cloud from
+gradient signal and prunes on opacity; it has no per-view target. So a longer
+scan does not automatically buy a proportionally larger splat.
+
+**If splat quality ever has to go up, raise the Gaussian count, do not cut
+views.** Cutting views trades coverage, which is the thing the render is short
+of, for detail, which is already adequate. Raising the count costs GPU memory
+and nothing else. Peak use here was 15.0 GiB of 23.5 at 5.0 M Gaussians, so
+there is room for roughly 8 M on the same card before the cache-free trainer
+runs out.
+
+Levers, in order of preference: a longer `refine_stop_iter` so densification
+runs further, a lower `grow_grad2d` so more Gaussians qualify to split, or a
+larger card. Not fewer views.

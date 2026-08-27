@@ -60,6 +60,49 @@ does not carry a capture.
 
 ## 3. The scan
 
+### SCAN FROM WHERE YOU WILL RENDER FROM
+
+**The scan must cover the band the wrist camera actually occupies. Covering
+the extremes and missing the middle is the failure this rule exists to stop.**
+
+real26/bm scanned 8 to 23 cm and 30 to 57 cm. It skipped 20 to 30 cm, which is
+exactly where the wrist camera sits at the 0.25 m UMI standoff. Every other
+number was excellent: 586 of 586 frames registered, 1.358 px reprojection, the
+floor down to 8.47 cm, and **0 per cent of rendered frames below the scan
+floor**, against 47 per cent on real26/a. The render still failed the viewpoint
+gate, at a median 15.05 cm from the nearest view that ever saw the scene
+against a 15.00 cm limit. Not because the scan was too high or too low, but
+because it was both and never in between.
+
+**Derive the band, do not guess it.** `mount.wrist_camera_offset` scales the
+mount to the standoff, so the camera sits a fixed fraction of it above the
+finger tips:
+
+```
+camera height above the fingertips = 0.7071 x standoff_m
+camera height above the desk       = that, plus how high the hand carries
+```
+
+| standoff | camera above fingertips | scan this band |
+|---|---|---|
+| 0.15 m | 10.6 cm | 10 to 30 cm |
+| 0.20 m | 14.1 cm | 14 to 34 cm |
+| **0.25 m (UMI)** | **17.7 cm** | **18 to 38 cm** |
+| 0.30 m | 21.2 cm | 21 to 41 cm |
+| 0.35 m | 24.7 cm | 25 to 45 cm |
+
+The upper end adds about 20 cm, because the hand lifts the object during a
+pick and place and takes the camera with it. Measured on real26/bm at 0.25 m,
+the wrist camera ran from 14.3 to 30.6 cm with a median of 25.1 cm, which sits
+inside the derived 18 to 38 cm band.
+
+**So: spend the largest share of the scan inside that band, aimed the way the
+wrist camera looks, not straight down.** A low pass and a high orbit are worth
+shooting, but they are the edges. The middle is the render.
+
+Check it before you leave the room: `standoff_m x 0.7071` is the height, and
+your scan needs plenty of frames from there to about 20 cm above it.
+
 ### How low the main lens can usefully go
 
 **About 20 cm for real detail. About 15 cm for usable. Below that, mostly
