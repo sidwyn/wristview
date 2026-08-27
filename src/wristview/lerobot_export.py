@@ -27,6 +27,7 @@ gripper, which is what a policy emits.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -106,6 +107,121 @@ def load_image(path: Path, width: int = IMAGE_WIDTH, height: int = IMAGE_HEIGHT)
     return cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
 
+# --- the alignment gate -------------------------------------------------------
+#
+# The fault this catches is image[i] paired with action[j], i != j. It is
+# invisible in every summary statistic: frame counts match, shapes match, the
+# dataset loads, and a policy trains on it happily while learning the wrong
+# association. The tap sync had the same shape and the same fix, a lag search.
+#
+# The signal is the wrist camera's optical flow against the action's
+# translation magnitude. The wrist camera is RIGIDLY attached to the
+# end-effector, so when the effector moves the whole image flows. That makes
+# the two series the same physical quantity measured two ways, one from pixels
+# and one from the pose stream, and it depends on nothing else the pipeline
+# produced. No segmentation, no colour threshold, no object model.
+#
+# Measured on real26bm demo_0, 350 exported frames:
+#     lag -2  r +0.2819
+#     lag -1  r +0.3606
+#     lag  0  r +0.4196   <-- peak
+#     lag +1  r +0.4172
+#     lag +2  r +0.3821
+#
+# Two things that table says. The peak is at zero, which is the pass. And the
+# margin over lag +1 is 0.0024, so this gate resolves a lag of 2 frames or
+# more and CANNOT reliably distinguish a 1-frame error from none. That limit
+# is stated rather than hidden: a gate whose resolution is unknown is not
+# evidence.
+#
+# The ego camera is head-mounted and is not attached to the effector, so it
+# does not carry this signal. Measured, it peaks at lag +10 with r -0.245.
+# Using it would fail a correct dataset.
+MAX_LAG = 10
+MIN_ABS_CORRELATION = 0.15
+
+
+def alignment_lag(dataset, camera: str = WRIST_KEY, max_lag: int = MAX_LAG) -> dict:
+    """Cross-correlate wrist optical flow against action magnitude."""
+    import cv2
+
+    def grey(index: int) -> np.ndarray:
+        frame = dataset[index][camera].numpy().transpose(1, 2, 0)
+        return cv2.cvtColor((frame * 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+
+    actions = np.stack([
+        dataset[i]["action"].numpy().astype(np.float64) for i in range(len(dataset))
+    ])
+    speed = np.linalg.norm(actions[:, :3], axis=1)
+
+    previous = grey(0)
+    flow_magnitude = []
+    for index in range(1, len(dataset)):
+        current = grey(index)
+        flow = cv2.calcOpticalFlowFarneback(
+            previous, current, None, 0.5, 3, 21, 3, 5, 1.2, 0)
+        flow_magnitude.append(float(np.median(np.linalg.norm(flow, axis=2))))
+        previous = current
+
+    image = np.asarray(flow_magnitude)
+    action = speed[:len(image)]
+    curve = {}
+    for lag in range(-max_lag, max_lag + 1):
+        if lag < 0:
+            a, b = image[-lag:], action[:len(action) + lag]
+        elif lag > 0:
+            a, b = image[:len(image) - lag], action[lag:]
+        else:
+            a, b = image, action
+        count = min(len(a), len(b))
+        curve[lag] = (float(np.corrcoef(a[:count], b[:count])[0, 1])
+                      if count > 20 else float("nan"))
+
+    finite = {k: v for k, v in curve.items() if np.isfinite(v)}
+    peak = max(finite, key=lambda k: finite[k]) if finite else None
+    return {
+        "camera": camera, "frames": len(dataset),
+        "peak_lag": peak,
+        "peak_r": finite.get(peak),
+        "r_at_zero": curve.get(0),
+        "curve": {str(k): round(v, 4) for k, v in curve.items() if np.isfinite(v)},
+    }
+
+
+def verify_alignment(dataset, camera: str = WRIST_KEY) -> dict:
+    """Raise unless the exported images and actions share an instant."""
+    report = alignment_lag(dataset, camera=camera)
+    lag, r_zero = report["peak_lag"], report["r_at_zero"]
+
+    if lag is None or r_zero is None or not np.isfinite(r_zero):
+        raise ValueError(
+            "the alignment gate could not measure anything: too few frames "
+            "to correlate. That is not a pass."
+        )
+    if abs(r_zero) < MIN_ABS_CORRELATION:
+        raise ValueError(
+            f"the alignment gate is inconclusive: correlation at lag 0 is "
+            f"{r_zero:+.3f}, under {MIN_ABS_CORRELATION}. The wrist view and "
+            f"the actions do not covary strongly enough to show alignment "
+            f"either way, so this dataset is UNVERIFIED, not verified. A "
+            f"near-static episode does this."
+        )
+    if lag != 0:
+        raise ValueError(
+            f"the exported images and actions are misaligned by {lag:+d} "
+            f"frames. Cross-correlating wrist optical flow against action "
+            f"magnitude peaks at lag {lag:+d} (r {report['peak_r']:+.3f}), not "
+            f"at 0 (r {r_zero:+.3f}). Every image in this dataset is paired "
+            f"with the action from {abs(lag)} frame(s) "
+            f"{'later' if lag > 0 else 'earlier'}. A policy trained on it "
+            f"learns the wrong association and nothing downstream can detect "
+            f"that."
+        )
+    log.info("alignment gate PASSED: peak at lag 0, r %+.4f (lag +1 r %+.4f)",
+             r_zero, report["curve"].get("1", float("nan")))
+    return report
+
+
 def build_dataset(
     episodes: list[dict],
     out_root: Path,
@@ -113,6 +229,7 @@ def build_dataset(
     fps: int,
     task: str,
     robot_type: str = "wristview-rendered",
+    verify: bool = True,
 ):
     """Write one LeRobotDataset from a list of episodes.
 
@@ -181,4 +298,13 @@ def build_dataset(
         )
     log.info("wrote %d episodes to %s, %d episode metadata file(s)",
              written, out_root, len(parquet))
+
+    # Gate the dataset that was actually written, by reading it back. Checking
+    # the buffers before they are serialised would test the wrong artifact.
+    if verify:
+        from lerobot.datasets.lerobot_dataset import LeRobotDataset
+
+        written_back = LeRobotDataset(repo_id=repo_id, root=out_root)
+        report = verify_alignment(written_back)
+        (out_root / "alignment.json").write_text(json.dumps(report, indent=2))
     return dataset
