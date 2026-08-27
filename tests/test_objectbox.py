@@ -47,7 +47,7 @@ def test_dimensions_fall_back_to_a_cube_of_the_solver_height():
 
 def test_explicit_dimensions_win():
     dims, source = resolve_dimensions(
-        {"object_height_m": 0.0762, "object_dimensions_m": [0.07, 0.07, 0.07]}
+        {"object_height_m": 0.070, "object_dimensions_m": [0.07, 0.07, 0.07]}
     )
     assert np.allclose(dims, 0.07)
     assert source == "object_dimensions_m"
@@ -102,3 +102,41 @@ def test_a_mask_smaller_than_its_image_is_still_sampled():
     (r, g, _), n = sample_colour([image], [mask])
     assert n == 400
     assert r == pytest.approx(200 / 255, abs=1e-6)
+
+
+def test_three_distinct_dimensions_are_kept_in_order():
+    """The matcha carton is 60 x 60 x 70 mm, not a cube."""
+    dims, source = resolve_dimensions({
+        "object_height_m": 0.070,
+        "object_dimensions_m": [0.060, 0.060, 0.070],
+    })
+    assert source == "object_dimensions_m"
+    assert dims[0] == pytest.approx(0.060)
+    assert dims[1] == pytest.approx(0.060)
+    assert dims[2] == pytest.approx(0.070)
+
+
+def test_z_must_match_object_height_because_the_solver_uses_it():
+    """z is vertical. The plane solve places the centre at offset + height/2.
+
+    Declaring a 70 mm-tall carton with object_height_m 0.060 would draw a
+    70 mm box at a position computed for a 60 mm one: a silent 5 mm float.
+    """
+    with pytest.raises(ValueError, match="must match"):
+        resolve_dimensions({
+            "object_height_m": 0.060,
+            "object_dimensions_m": [0.060, 0.060, 0.070],
+        })
+
+
+def test_a_single_number_is_refused():
+    for bad in (0.070, [0.070], [0.06, 0.07]):
+        with pytest.raises(ValueError, match="three lengths"):
+            resolve_dimensions({"object_dimensions_m": bad})
+
+
+def test_the_carton_box_is_taller_than_it_is_wide():
+    vertices, _ = box_mesh([0.060, 0.060, 0.070])
+    extent = vertices.max(axis=0) - vertices.min(axis=0)
+    assert extent[2] > extent[0]
+    assert extent[2] == pytest.approx(0.070)

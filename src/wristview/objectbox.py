@@ -65,12 +65,34 @@ def resolve_dimensions(pose_cfg: dict) -> tuple[np.ndarray, str]:
     of one size at a position computed for another.
     """
     explicit = pose_cfg.get("object_dimensions_m")
-    if explicit:
+    if explicit is not None:
         dims = np.asarray(explicit, dtype=np.float64)
         if dims.shape != (3,):
             raise ValueError(
-                f"object_dimensions_m must hold three lengths, got {explicit}"
+                f"object_dimensions_m must hold three lengths as [x, y, z], "
+                f"got {explicit}. z is the vertical one: `plane.object_pose_on_plane` "
+                f"builds the object frame as [axis, normal x axis, normal], so the "
+                f"third column is the desk normal."
             )
+        if not np.all(dims > 0):
+            raise ValueError(f"object_dimensions_m must be positive, got {explicit}")
+
+        # z is the height, and the plane solve places the centre at
+        # `offset + object_height_m / 2`. If the two disagree the box is drawn
+        # one size and positioned for another, and the error is a silent
+        # vertical offset of half the difference. A 60x60x70 carton declared
+        # with object_height_m 0.060 would float 5 mm.
+        height = pose_cfg.get("object_height_m")
+        if height is not None and float(height) > 0:
+            if abs(float(dims[2]) - float(height)) > 1e-4:
+                raise ValueError(
+                    f"object_dimensions_m z is {dims[2]:.4f} m and "
+                    f"object_height_m is {float(height):.4f} m. They must "
+                    f"match: z is the vertical extent, and the plane solve "
+                    f"places the object's centre at offset + "
+                    f"object_height_m / 2. Disagreeing by {abs(float(dims[2]) - float(height)) * 1000:.1f} mm "
+                    f"would sit the box {abs(float(dims[2]) - float(height)) * 500:.1f} mm off the desk."
+                )
         return dims, "object_dimensions_m"
 
     height = float(pose_cfg.get("object_height_m") or 0.0)
