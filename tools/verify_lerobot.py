@@ -1,12 +1,18 @@
 """Observe the tensor the policy actually stacks, not one computed alongside."""
-import os, torch
-torch.set_num_threads(2); os.environ["CUDA_VISIBLE_DEVICES"] = ""
+import os
 from pathlib import Path
+
+# CPU only, and modestly. This runs while a long MPS job owns the machine.
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+import torch
+from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
 from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
-from lerobot.configs.types import FeatureType, PolicyFeature
 from lerobot.utils.constants import OBS_IMAGES
+
+torch.set_num_threads(2)
 
 S = Path("/tmp/claude-501/-Users-sidwyn-Documents-Documents-Personal-Projects-atlas/4c7d9149-910a-457c-9850-0c4d7292cfb6/scratchpad")
 EGO, WRIST = "observation.images.ego", "observation.images.wrist"
@@ -23,7 +29,8 @@ for label, cams in {"(a) ego only": [EGO], "(b) ego + wrist": [EGO, WRIST],
         n_obs_steps=2, horizon=16, n_action_steps=8, crop_shape=(340, 600), device="cpu")
     stats = {k: {kk: (v.numpy() if hasattr(v, "numpy") else v) for kk, v in d.items()}
              for k, d in base.meta.stats.items()}
-    policy = DiffusionPolicy(cfg, dataset_stats=stats).to("cpu"); policy.train()
+    policy = DiffusionPolicy(cfg, dataset_stats=stats).to("cpu")
+    policy.train()
 
     seen = {}
     original = policy.diffusion._prepare_global_conditioning
