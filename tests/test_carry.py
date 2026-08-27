@@ -17,7 +17,7 @@ from wristview.carry import (
     contact_onsets,
     grasp_centre,
     point_on_ray_closest_to,
-    rest_precedes_contact,
+    rest_window_before_contact,
     resting_pose,
     solve_carried,
 )
@@ -329,22 +329,32 @@ class TestRestPrecedesContact:
     below the desk across 109 frames, and every other metric passed.
     """
 
-    def test_a_rest_run_after_contact_is_refused(self):
-        problem = rest_precedes_contact((360, 510), [243, 400])
+    def test_a_rest_run_wholly_after_contact_is_refused(self):
+        window, problem = rest_window_before_contact((360, 510), [243, 400])
+        assert window is None
+        assert problem is not None and "360" in problem and "243" in problem
+
+    def test_a_rest_run_before_contact_is_kept_whole(self):
+        assert rest_window_before_contact((0, 90), [100, 300]) == ((0, 90), None)
+
+    def test_a_run_overlapping_contact_is_TRIMMED_not_refused(self):
+        """real27 take01: still from frame 0 to 90, contact at 75.
+
+        The object had not moved, scatter 0.04 cm. Frames 0 to 74 are exactly
+        the resting evidence the carry needs. An earlier version of this guard
+        threw the take away.
+        """
+        window, problem = rest_window_before_contact((0, 90), [75])
+        assert problem is None
+        assert window == (0, 75)
+
+    def test_a_run_leaving_too_few_frames_before_contact_is_refused(self):
+        window, problem = rest_window_before_contact((0, 90), [3], min_rest_frames=5)
+        assert window is None
         assert problem is not None
-        assert "360" in problem and "243" in problem
 
-    def test_a_rest_run_before_contact_is_accepted(self):
-        assert rest_precedes_contact((0, 90), [100, 300]) is None
-
-    def test_a_rest_run_ending_exactly_at_contact_is_accepted(self):
-        assert rest_precedes_contact((0, 100), [100]) is None
-
-    def test_a_rest_run_ending_one_frame_late_is_refused(self):
-        assert rest_precedes_contact((0, 101), [100]) is not None
-
-    def test_no_contact_means_nothing_to_check(self):
-        assert rest_precedes_contact((360, 510), []) is None
+    def test_no_contact_means_nothing_to_trim(self):
+        assert rest_window_before_contact((360, 510), []) == ((360, 510), None)
 
     def test_solve_carried_raises_rather_than_returning_a_wrong_carry(self, lifted_clip):
         """The guard lives in the function, so every caller is protected."""
@@ -356,7 +366,7 @@ class TestRestPrecedesContact:
         assert onsets, "fixture must produce a contact for this test to mean anything"
         rest = np.eye(4)
         rest[:3, 3] = REST
-        with pytest.raises(ValueError, match="does not END before contact"):
+        with pytest.raises(ValueError, match="frames of rest before contact"):
             solve_carried(
                 plane_poses, plane_valid, rays, cameras, landmarks, hand_valid,
                 rest, onsets, (onsets[0] + 10, onsets[0] + 50),

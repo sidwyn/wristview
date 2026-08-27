@@ -191,6 +191,42 @@ def _distance_to_ray(
     return float(np.linalg.norm(offset - float(offset @ unit) * unit))
 
 
+def rest_window_before_contact(
+    rest_run: tuple[int, int], onsets: list[int], min_rest_frames: int = 5
+) -> tuple[tuple[int, int] | None, str | None]:
+    """Trim a still run to the part that happened BEFORE the grasp.
+
+    A still run may legitimately extend past first contact. The hand reaches
+    the object several frames before it lifts it, and while the object has not
+    moved the plane solve keeps returning the same point, so the run continues.
+    real27 measured a run of frames 0 to 90 with contact at 75 and a scatter of
+    0.04 cm: the object genuinely had not moved, and frames 0 to 74 are exactly
+    the resting evidence the carry solve needs.
+
+    So the rule is not "the run ends before contact". It is "enough of the run
+    happened before contact". Trim at the first onset and check what is left.
+
+    Returns the usable window and, if there is none, why.
+    """
+    start, stop = int(rest_run[0]), int(rest_run[1])
+    if not onsets:
+        return (start, stop), None
+    first = int(min(onsets))
+    trimmed_stop = min(stop, first)
+    if trimmed_stop - start < min_rest_frames:
+        return None, (
+            f"the resting pose was measured on frames {start} to {stop}, and "
+            f"the hand first reaches the object at frame {first}, which leaves "
+            f"{max(trimmed_stop - start, 0)} frames of rest before contact "
+            f"against a minimum of {min_rest_frames}. There is no window in "
+            f"which the object was seen at rest before it was touched, so "
+            f"where it rested is unknown. On real26/bm demo_1 the run began "
+            f"117 frames AFTER the release and the carry solved 7.06 cm below "
+            f"the desk."
+        )
+    return (start, trimmed_stop), None
+
+
 def rest_precedes_contact(rest_run: tuple[int, int], onsets: list[int]) -> str | None:
     """Return why the resting pose cannot be used, or None if it can.
 
@@ -259,7 +295,7 @@ def solve_carried(
     # The resting pose must predate the grasp. See `rest_precedes_contact`.
     # This raises rather than returning a flag, because the alternative is a
     # complete, plausible, wrong trajectory that every downstream gate passes.
-    problem = rest_precedes_contact(rest_run, onsets)
+    _window, problem = rest_window_before_contact(rest_run, onsets)
     if problem is not None:
         raise ValueError(problem)
 

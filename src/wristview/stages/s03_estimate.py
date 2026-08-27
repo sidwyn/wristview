@@ -307,12 +307,33 @@ def _estimate_episode(
     # With one prompt for the whole run the detector took the most salient
     # object, the bin, which never moves, and every object pose described a
     # thing nobody touched.
+    # What to hand the detector, most specific first:
+    #   1. estimate.pose.per_clip[clip].prompt   this clip's object
+    #   2. estimate.object.prompt                this session's object
+    #   3. the CLI --instruction                 a sentence about the task
+    #
+    # Three was the only one wired up. `estimate.object.prompt` was declared in
+    # the config, documented, and read by no code, so real27 passed the whole
+    # task sentence to Grounding DINO: "pick up the tea box and place it on the
+    # mat". A sentence is not a noun phrase and the detector had nothing to
+    # lock onto, which surfaced as a box covering 93 per cent of the frame.
+    #
+    # A declared key that nothing reads is the same defect as an undeclared one
+    # and is harder to see, because it survives the unknown-key check.
     per_clip = (pose_cfg.get("per_clip") or {}).get(clip_id, {})
+    object_prompt = str((cfg.get("object") or {}).get("prompt") or "").strip()
     if per_clip.get("prompt"):
         instruction = str(per_clip["prompt"])
+        prompt_source = "estimate.pose.per_clip"
+    elif object_prompt:
+        instruction = object_prompt
+        prompt_source = "estimate.object.prompt"
+    else:
+        prompt_source = "the --instruction sentence, which names a task not an object"
     object_height_m = float(per_clip.get("object_height_m",
                                          pose_cfg.get("object_height_m", 0.0)))
-    log.info("%s: tracking '%s', height %.1f mm", clip_id, instruction, object_height_m * 1000)
+    log.info("%s: tracking '%s' (from %s), height %.1f mm",
+             clip_id, instruction, prompt_source, object_height_m * 1000)
     if desk_normal is not None and object_height_m <= 0:
         log.warning(
             "%s: a desk plane exists but retarget.object_height_m is unset, so the "
@@ -540,8 +561,31 @@ def _estimate_episode(
             # object ended up, not where it started. Solving the carry from it
             # produces a complete, plausible, wrong trajectory. Leave the
             # carried frames unsolved instead and say so.
+            # Trim the still run to the part before the grasp, and take the
+            # resting position from that. A run that continues past contact is
+            # normal: the hand arrives before it lifts, and until the object
+            # moves the plane solve keeps returning the same point.
             rest_run = tuple(rest_report["rest_run"])
-            problem = carry.rest_precedes_contact(rest_run, onsets)
+            window, problem = carry.rest_window_before_contact(
+                rest_run, onsets,
+                min_rest_frames=int(carry_cfg.get("min_rest_frames", 5)),
+            )
+            if window is not None and window != rest_run:
+                inside = np.zeros(len(object_valid), dtype=bool)
+                inside[window[0]:window[1]] = True
+                inside &= object_valid
+                if inside.any():
+                    rest_pose = rest_pose.copy()
+                    rest_pose[:3, 3] = np.median(object_poses[inside][:, :3, 3], axis=0)
+                    rest_report = dict(rest_report)
+                    rest_report["rest_run_trimmed"] = [int(window[0]), int(window[1])]
+                    rest_report["trimmed_at_first_contact"] = int(min(onsets))
+                    log.info(
+                        "%s: resting pose trimmed to frames %d-%d, before contact "
+                        "at %d, from %d frames",
+                        clip_id, window[0], window[1], min(onsets), int(inside.sum()),
+                    )
+                    rest_run = window
             if problem is not None:
                 log.error("%s: CARRY NOT SOLVED. %s", clip_id, problem)
                 carry_report = {

@@ -55,6 +55,8 @@ something must fail on it, or it must not be computed.**
 | 27 | Grounding DINO's argmax box returned whatever scored highest | the best-scoring box | whether anything was found | a 98 per cent-of-frame box read as "the carton is in every scan frame" when it was not on the mat |
 | 28 | Scan height measured from marker-visible frames only | the frames that can see a flat marker | how low the camera went | a frame below 30 cm is 0.15x as likely to show the marker; 45.7 per cent true reads as 11.4 per cent |
 | 29 | The marker is treated as always available | that a fiducial was placed | whether anything can see it | id 0 found in 14 of 30 demo first frames; the scan render-band check unmeasurable on two scans running |
+| 30 | `estimate.object.prompt` was declared, documented, and read by nothing | the config file | what Stage 3 hands the detector | real27 sent the whole task sentence to Grounding DINO and got a box covering 93 per cent of the frame |
+| 31 | The rest-window guard required the still run to END before contact | whether the run overlapped the grasp | whether ENOUGH of it preceded the grasp | refused a valid take whose object sat still from frame 0 to 90 with contact at 75 |
 
 ## Row 7, in detail
 
@@ -425,3 +427,45 @@ Fix before the next session, in the capture and not in the code:
 - Stand a second marker VERTICAL beside the mat, on a different id, so the
   low across-the-mat views that the render band is made of have something to
   measure against.
+
+
+## Rows 30 and 31, in detail
+
+Both are mine, from this session, and both were caught by guards added earlier
+in it.
+
+Row 30. `estimate.object.prompt` sat in `configs/default.yaml` with eight lines
+of comment explaining why naming the object matters. No code read it. Stage 3
+took its detector phrase from the CLI `--instruction`, overridable only by
+`estimate.pose.per_clip[clip].prompt`. So real27 handed Grounding DINO "pick up
+the tea box and place it on the mat", a sentence describing a task, and the
+detector returned a box covering 93 per cent of the frame.
+
+Two things about this are worth keeping.
+
+**A declared key that nothing reads survives the unknown-key check.** Defect 8
+made unknown keys a loud error, and this key is not unknown, it is known and
+ignored. The check that catches it is a test asserting the source contains the
+read, which is now in `test_stage_call_sites.py`.
+
+**It was reported as done.** Earlier in this session I told Sidwyn the prompt
+was set and active. I had edited the config and not checked that anything read
+it. CLAUDE.md says: do not report a setting as active until you have confirmed
+the code reads it. The rule exists because this is easy and the failure is
+invisible until a detector is asked to find a sentence.
+
+Row 31 is the opposite error, an over-strict guard. Defect 24's fix required
+the still run to end before first contact. That is too strong. A run often
+continues past contact for good reason: the hand arrives several frames before
+it lifts, and while the object has not moved the plane solve keeps returning
+the same point. real27's take01 measured a run of frames 0 to 90 with contact
+at 75 and a scatter of 0.04 cm. The object genuinely had not moved, frames 0 to
+74 were exactly the evidence needed, and the guard threw the take away.
+
+The rule is now "enough of the run happened before contact": trim at the first
+onset and require `min_rest_frames` to remain. Checked against all four cases,
+including real26/bm demo_1, which still fails because its run began 117 frames
+after the release.
+
+A guard that rejects valid data is a defect, not caution. It costs a re-shoot
+just as surely as a guard that passes bad data costs a session.

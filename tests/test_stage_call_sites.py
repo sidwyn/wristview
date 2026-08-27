@@ -95,3 +95,19 @@ def test_the_check_would_have_caught_the_resting_pose_break():
         signature.bind_partial(1, 2, 3, 4, clearance_m=0.15)
     # And the call the stage makes now is accepted.
     signature.bind_partial(1, 2, stillness_m=0.01, min_rest_frames=5)
+
+
+def test_stage3_reads_the_object_prompt_from_the_config():
+    """`estimate.object.prompt` must reach Grounding DINO.
+
+    It was declared, documented, and read by nothing. real27 therefore passed
+    the whole task sentence to the detector, "pick up the tea box and place it
+    on the mat", which returned a box covering 93 per cent of the frame. A
+    declared key that nothing reads survives the unknown-key check, so only a
+    test like this catches it.
+    """
+    source = Path("src/wristview/stages/s03_estimate.py").read_text()
+    assert '(cfg.get("object") or {}).get("prompt")' in source, (
+        "Stage 3 does not read estimate.object.prompt"
+    )
+    assert "prompt_source" in source, "Stage 3 does not report which prompt it used"
