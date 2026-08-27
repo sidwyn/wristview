@@ -427,7 +427,12 @@ WARPED used a diffusion policy. The inputs were wrist-view observations and
 proprioception. The outputs were chunks of relative pose and gripper
 actions. Copy the architecture and the action format.
 
-**These three facts are verified in the LeRobot 0.4.4 source:**
+**These three facts are verified in the LeRobot source.** They were first
+read in 0.4.4, then read again in **0.6.1**, which is what `pip` installs
+today. Both agree. Pin 0.6.1, or write the version into the run record.
+Line numbers below are 0.6.1: the multi-camera stack is
+`modeling_diffusion.py:120` and the identical-shape raise is
+`configuration_diffusion.py:245`.
 
 1. The diffusion policy accepts more than one camera. It gets the visual
    features from each camera and stacks them (`modeling_diffusion.py:130`).
@@ -449,6 +454,25 @@ actions. Copy the architecture and the action format.
 
 Our actions come from Stage 4. The retarget makes an end-effector pose for
 each frame. These poses ARE the actions.
+
+**The highest risk in the export is frame-to-action alignment.** Stage 6 maps
+stage 5 renders to stage 4 poses through `source_frame_index`. If the mapping
+moves by even one frame, each image is paired with the wrong action. Nothing
+downstream can find this fault. The policy trains, the loss decreases, and
+every number in section 6 is wrong.
+
+Three facts found in the LeRobot source that the documentation does not give:
+
+1. Episode metadata is buffered and written at 10 episodes. A dataset with
+   fewer than 10 episodes leaves `meta/episodes` empty. The load then goes to
+   the Hugging Face Hub and fails with a 401 about authentication, although
+   the true cause is a buffer that was not flushed. Call `finalize()` and
+   make sure the parquet file exists.
+2. The parallel video encoder fails on macOS with `BrokenProcessPool`.
+   Encode in the same process.
+3. `torchcodec` does not load when the installed ffmpeg is newer than
+   libavutil.56. LeRobot changes to pyav automatically and the decode is
+   correct, but the speed at 60 episodes is not measured.
 
 ### 5.3 The training runs
 

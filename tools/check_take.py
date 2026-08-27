@@ -34,10 +34,23 @@ import numpy as np
 # clipped or carrying dead air, and dead air is the cheapest thing to fix.
 DEMO_SECONDS_MIN, DEMO_SECONDS_MAX = 8.0, 13.0
 
+# A tapped take carries a tap at each end, so it is longer.
+TAPPED_SECONDS_MIN, TAPPED_SECONDS_MAX = 12.0, 18.0
+
 # --- check 2 -----------------------------------------------------------------
 # The hand must be out of frame at the start, so a resting pose exists before
 # the grasp. real27 had the hand within 1.8 cm of the object at frame 0.
 HAND_FREE_FRAMES = 30
+
+# A tapped take does not begin hand-free: the hand enters, taps the table,
+# leaves, and only then reaches for the object. So the window to find is the
+# GAP between the tap and the reach, not the head of the clip. Measuring from
+# frame 0 would find the tap and fail every correctly shot group-C take.
+TAPPED_GAP_MIN_FRAMES = 30
+TAPPED_GAP_MIN_SECONDS = 1.5
+# How far in to look before giving up. A tap and a reach inside 15 s covers
+# the 12 to 18 s a tapped take should run.
+TAPPED_SEARCH_SECONDS = 15.0
 
 # --- check 4 -----------------------------------------------------------------
 MARKER_SIDE_M = 0.100
@@ -133,6 +146,90 @@ def probe(path: Path) -> dict:
         "duration_s": float(data["format"]["duration"]),
         "rotation": rotation_tag(path),
     }
+
+
+def hand_presence(path: Path, frames: int) -> list[bool]:
+    """Per-frame hand presence for the first `frames` frames."""
+    import mediapipe as mp
+
+    hands = mp.solutions.hands.Hands(
+        static_image_mode=True, max_num_hands=2, min_detection_confidence=0.5
+    )
+    capture = cv2.VideoCapture(str(path))
+    present: list[bool] = []
+    try:
+        for _ in range(frames):
+            ok, frame = capture.read()
+            if not ok:
+                break
+            result = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            present.append(bool(result.multi_hand_landmarks))
+    finally:
+        capture.release()
+        hands.close()
+    return present
+
+
+def tapped_gap(present: list[bool], fps: float) -> dict:
+    """Find the hand-free window between the tap and the reach.
+
+    A tapped take runs: hand in (tap), hand out (the gap), hand in (the reach).
+    The gap is what the resting pose is measured from, so it has to exist and
+    be long enough. Looking only at the head of the clip, as the untapped check
+    does, would find the tap and fail every correctly shot take.
+    """
+    runs = []
+    index = 0
+    while index < len(present):
+        start = index
+        value = present[index]
+        while index < len(present) and present[index] == value:
+            index += 1
+        runs.append({"value": value, "start": start, "stop": index, "length": index - start})
+
+    # Detection flickers. A single frame of hand, or a two-frame dropout in the
+    # middle of a reach, are not a tap and not a gap. Requiring both sides to
+    # be sustained stops a flicker being read as the structure we are looking
+    # for. Measured on an untapped take, the naive version found a "tap" at
+    # frame 178 and a 2-frame "gap" at 179-180, in the middle of a grasp.
+    MIN_RUN = 5
+
+    candidates = []
+    saw_hand = False
+    for position, run in enumerate(runs):
+        if run["value"]:
+            if run["length"] >= MIN_RUN:
+                saw_hand = True
+            continue
+        if not saw_hand:
+            # A hand-free head, before any tap. Not the gap we want.
+            continue
+        following = runs[position + 1] if position + 1 < len(runs) else None
+        if following is None or not following["value"] or following["length"] < MIN_RUN:
+            continue
+        previous = next((r for r in reversed(runs[:position])
+                         if r["value"] and r["length"] >= MIN_RUN), None)
+        candidates.append({
+            "found": True,
+            "start": run["start"], "stop": run["stop"],
+            "frames": run["length"], "seconds": run["length"] / fps,
+            "tap_run": [previous["start"], previous["stop"]] if previous else None,
+            "reach_starts": following["start"],
+        })
+
+    # Take the first gap that is long enough. Returning the first gap of any
+    # length would let a flicker mask the real one further in.
+    for candidate in candidates:
+        if candidate["frames"] >= TAPPED_GAP_MIN_FRAMES and \
+                candidate["seconds"] >= TAPPED_GAP_MIN_SECONDS:
+            candidate["candidates_seen"] = len(candidates)
+            return candidate
+    if candidates:
+        longest = max(candidates, key=lambda c: c["frames"])
+        longest["candidates_seen"] = len(candidates)
+        return longest
+    return {"found": False, "runs": len(runs),
+            "hand_frames": int(sum(present)), "frames_examined": len(present)}
 
 
 def first_hand_frame(path: Path, frames: int) -> tuple[int | None, int]:
@@ -256,6 +353,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--scan", required=True)
     parser.add_argument("--demo", required=True)
+    parser.add_argument("--tapped", action="store_true",
+                        help="a group-C take, with a tap at each end. Widens the "
+                             "duration limit and looks for the hand-free window "
+                             "BETWEEN the tap and the reach.")
     parser.add_argument("--sample-fps", type=float, default=5.0)
     parser.add_argument("--json", default=None)
     args = parser.parse_args()
@@ -276,33 +377,82 @@ def main() -> int:
     print()
 
     # --- 1. demo duration ---
+    low, high = ((TAPPED_SECONDS_MIN, TAPPED_SECONDS_MAX) if args.tapped
+                 else (DEMO_SECONDS_MIN, DEMO_SECONDS_MAX))
     seconds = demo_info["duration_s"]
-    ok1 = DEMO_SECONDS_MIN <= seconds <= DEMO_SECONDS_MAX
+    ok1 = low <= seconds <= high
+    report["mode"] = "tapped" if args.tapped else "plain"
     report["check1_duration_s"] = round(seconds, 2)
     print(f"1 demo duration      {seconds:6.1f} s   "
-          f"[{DEMO_SECONDS_MIN:.0f} to {DEMO_SECONDS_MAX:.0f}]   {'PASS' if ok1 else 'FAIL'}")
+          f"[{low:.0f} to {high:.0f}{', tapped' if args.tapped else ''}]   "
+          f"{'PASS' if ok1 else 'FAIL'}")
     if not ok1:
         hard.append(
-            f"the demo is {seconds:.1f} s, outside {DEMO_SECONDS_MIN:.0f} to "
-            f"{DEMO_SECONDS_MAX:.0f} s. "
-            + ("Trim the dead air; it costs compute on every one of 30 takes."
-               if seconds > DEMO_SECONDS_MAX else "The take is clipped.")
+            f"the demo is {seconds:.1f} s, outside {low:.0f} to {high:.0f} s"
+            + (" for a tapped take" if args.tapped else "") + ". "
+            + ("Trim the dead air; it costs compute on every take."
+               if seconds > high else "The take is clipped.")
         )
 
-    # --- 2. hand out of frame at the start ---
-    first, _read = first_hand_frame(demo, HAND_FREE_FRAMES)
-    ok2 = first is None
-    report["check2_first_hand_frame"] = first
-    report["check2_frames_checked"] = HAND_FREE_FRAMES
-    print(f"2 hand-free start    {'none' if ok2 else f'frame {first}':>6}     "
-          f"[first {HAND_FREE_FRAMES} frames]   {'PASS' if ok2 else 'FAIL'}")
-    if not ok2:
-        hard.append(
-            f"a hand appears at frame {first} of the first {HAND_FREE_FRAMES}. The take must "
-            f"start with the hand OUT of frame, so the object is seen at rest "
-            f"before the grasp. Without that the carry cannot be solved and the "
-            f"object stays pinned to the desk for the whole clip."
-        )
+    # --- 2. a hand-free window before the grasp ---
+    if args.tapped:
+        budget = int(TAPPED_SEARCH_SECONDS * demo_info["fps"])
+        present = hand_presence(demo, budget)
+        gap = tapped_gap(present, demo_info["fps"])
+        report["check2_tapped_gap"] = gap
+        ok2 = bool(gap.get("found")) and gap["frames"] >= TAPPED_GAP_MIN_FRAMES \
+            and gap["seconds"] >= TAPPED_GAP_MIN_SECONDS
+        if gap.get("found"):
+            # Say where it looked. A gate that passes without showing its
+            # working is not evidence.
+            print(f"2 hand-free gap      {gap['seconds']:5.2f} s   "
+                  f"[{TAPPED_GAP_MIN_SECONDS:.1f} s and {TAPPED_GAP_MIN_FRAMES} frames]  "
+                  f"{'PASS' if ok2 else 'FAIL'}")
+            print(f"    tap        frames {gap['tap_run'][0]:4d}-{gap['tap_run'][1] - 1:<4d}"
+                  f" ({gap['tap_run'][0] / demo_info['fps']:5.2f}-"
+                  f"{(gap['tap_run'][1] - 1) / demo_info['fps']:5.2f} s)")
+            print(f"    GAP        frames {gap['start']:4d}-{gap['stop'] - 1:<4d}"
+                  f" ({gap['start'] / demo_info['fps']:5.2f}-"
+                  f"{(gap['stop'] - 1) / demo_info['fps']:5.2f} s)  "
+                  f"{gap['frames']} frames")
+            print(f"    reach from frame {gap['reach_starts']:4d}"
+                  f"      ({gap['reach_starts'] / demo_info['fps']:5.2f} s)")
+        else:
+            print(f"2 hand-free gap      {'none':>6}     "
+                  f"[searched {len(present)} frames]   FAIL")
+            print(f"    hand present in {gap['hand_frames']} of "
+                  f"{gap['frames_examined']} frames examined, in {gap['runs']} run(s)")
+        if not ok2:
+            if not gap.get("found"):
+                hard.append(
+                    f"no hand-free window was found between a tap and a reach in "
+                    f"the first {TAPPED_SEARCH_SECONDS:.0f} s. A tapped take must "
+                    f"go: tap, hand fully out of frame, then reach. Without the "
+                    f"gap the object is never seen at rest and the carry cannot "
+                    f"be solved."
+                )
+            else:
+                hard.append(
+                    f"the hand-free gap between the tap and the reach is "
+                    f"{gap['seconds']:.2f} s over {gap['frames']} frames, under "
+                    f"{TAPPED_GAP_MIN_SECONDS:.1f} s. Pause longer after the tap, "
+                    f"with the hand fully out of frame."
+                )
+    else:
+        first, _read = first_hand_frame(demo, HAND_FREE_FRAMES)
+        ok2 = first is None
+        report["check2_first_hand_frame"] = first
+        report["check2_frames_checked"] = HAND_FREE_FRAMES
+        print(f"2 hand-free start    {'none' if ok2 else f'frame {first}':>6}     "
+              f"[first {HAND_FREE_FRAMES} frames]   {'PASS' if ok2 else 'FAIL'}")
+        if not ok2:
+            hard.append(
+                f"a hand appears at frame {first} of the first {HAND_FREE_FRAMES}. "
+                f"The take must start with the hand OUT of frame, so the object "
+                f"is seen at rest before the grasp. Without that the carry cannot "
+                f"be solved and the object stays pinned to the desk for the whole "
+                f"clip."
+            )
 
     # --- 3. rotation tags agree ---
     ok3 = scan_info["rotation"] == demo_info["rotation"]
