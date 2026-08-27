@@ -140,3 +140,33 @@ def test_the_carton_box_is_taller_than_it_is_wide():
     extent = vertices.max(axis=0) - vertices.min(axis=0)
     assert extent[2] > extent[0]
     assert extent[2] == pytest.approx(0.070)
+
+
+class TestWholeFrameDetectionIsRefused:
+    """[6, 3, 1912, 1075] on a 1920x1080 frame is 98% of the image.
+
+    Grounding DINO always returns its highest-scoring box. When the phrase
+    matches nothing the box is the frame. Checking real27's scan for the tea
+    box returned exactly that on 5 of 14 sampled frames, which read as
+    "the carton is in every scan frame". It was not on the mat at all.
+    """
+
+    def test_the_limit_is_declared_and_sane(self):
+        from wristview.backends.objects import MAX_DETECTION_FRAME_FRACTION
+
+        assert 0.3 < MAX_DETECTION_FRAME_FRACTION < 0.95
+
+    def test_the_real27_box_is_over_the_limit(self):
+        from wristview.backends.objects import MAX_DETECTION_FRAME_FRACTION
+
+        box = (6, 3, 1912, 1075)
+        fraction = ((box[2] - box[0]) * (box[3] - box[1])) / (1920 * 1080)
+        assert fraction > MAX_DETECTION_FRAME_FRACTION
+
+    def test_a_real_carton_box_is_under_the_limit(self):
+        """A 70 mm carton at 40 cm with f=1451 spans about 254 px."""
+        from wristview.backends.objects import MAX_DETECTION_FRAME_FRACTION
+
+        span = 1451 * 0.070 / 0.40
+        fraction = (span * span) / (1920 * 1080)
+        assert fraction < MAX_DETECTION_FRAME_FRACTION

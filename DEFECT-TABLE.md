@@ -52,6 +52,8 @@ something must fail on it, or it must not be computed.**
 | 24 | `resting_pose` returned the first sustained still run | that the object was still somewhere | whether it was still BEFORE the grasp | real26/bm demo_1 measured the rest position 117 frames after the release and carried the object 7 cm under the desk |
 | 25 | `render.wrist_camera.standoff_m` was optional and null | nothing, and warned about it | the camera-to-fingertip distance the rig sets | every take of real06b and real26 shipped with the wrist camera unchecked |
 | 26 | Blur threshold taken from the whole clip's median | the average sharpness of a mixed scan | whether a frame is soft for its own pass | appending a sharp pass cost the low pass 18 frames and raised the floor 8.47 to 12.15 cm on identical footage |
+| 27 | Grounding DINO's argmax box returned whatever scored highest | the best-scoring box | whether anything was found | a 98 per cent-of-frame box read as "the carton is in every scan frame" when it was not on the mat |
+| 28 | Scan height measured from marker-visible frames only | the frames that can see a flat marker | how low the camera went | a frame below 30 cm is 0.15x as likely to show the marker; 45.7 per cent true reads as 11.4 per cent |
 
 ## Row 7, in detail
 
@@ -326,3 +328,52 @@ computed from a population is only valid for a population that is homogeneous
 in the thing being thresholded.** Mixing two regimes into one median produces a
 threshold that is too strict for one and too loose for the other, and neither
 half is visibly wrong.
+
+
+## Rows 27 and 28, in detail
+
+Row 27 is the `_overflow` shape again. Grounding DINO returns its
+highest-scoring box whatever the score means, so when the phrase matches
+nothing in particular the winning box is the image. Checking real27's scan for
+the tea box returned `[6, 3, 1912, 1075]` on a 1920x1080 frame, 98 per cent of
+the area, on 5 of 14 sampled frames. Read as detections those said the carton
+appeared in every scan frame. It was not on the mat at all. `detect` now
+raises above 60 per cent of frame area, because a caller cannot tell that box
+from a real one.
+
+Row 28 is selection bias by marker visibility, for the fourth time, and it is
+worth stating precisely because it kills a check that looked obviously
+correct.
+
+`tools/check_take.py` was asked to measure how much of a scan sits below
+30 cm, from raw video, using the apparent size of marker id 0. The marker lies
+flat on the desk. A camera low down and looking ACROSS the mat sees it
+obliquely or not at all, and that is exactly the render band the check exists
+to police. Measured on real26/d against heights from its own reconstruction:
+
+| height | frames | marker seen | rate |
+|---|---|---|---|
+| 0-15 cm | 105 | 0 | **0%** |
+| 15-20 cm | 127 | 6 | 5% |
+| 20-30 cm | 102 | 26 | 25% |
+| 30-38 cm | 143 | 66 | 46% |
+| 38-60 cm | 254 | 183 | 72% |
+
+A frame below 30 cm is 0.15 times as likely to show the marker as one above.
+The true share below 30 cm is 45.7 per cent and the marker-visible subset says
+11.4 per cent.
+
+**So a scan shot correctly is the scan whose low frames the marker cannot
+see.** Failing on this measurement would reject exactly what it should accept:
+real26/d passed the real viewpoint gate at 7.47 cm and this check scores it at
+5.8 s below 30 cm, the same as real27 which was genuinely shot high.
+
+The check is therefore a LOWER BOUND and can only pass, never fail. Clearing
+the bar on marker-visible frames alone clears it outright, because the unseen
+frames are lower still. Not clearing it shows nothing either way.
+
+Making it a real gate needs a capture change, not a code change: a second
+marker standing VERTICAL beside the mat stays visible from the low
+across-the-mat views and gives the same height and azimuth from one PnP solve.
+Until that exists the honest pre-flight is checks 1 to 3, and the render band
+is confirmed after Stage 1 with `close_range_coverage`.

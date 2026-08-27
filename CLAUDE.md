@@ -86,6 +86,9 @@ When you add a metric, make something read it and act on it.
 
 ## Config traps
 
+- The full key is `scene.scale.aruco_marker_length_m`. The short form
+  `scene.aruco_marker_length_m` raises an unknown-key error. real27 lost a
+  command to this.
 - `aruco_marker_length_m` was 0.15 from the first commit. Every marker this
   project printed is 0.100 m. Pass it explicitly. Never use the default.
 - Unknown config keys must raise. `estimate.hand.stride` was passed, did not

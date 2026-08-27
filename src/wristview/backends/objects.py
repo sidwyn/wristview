@@ -36,6 +36,11 @@ def sam2_available() -> tuple[bool, str]:
     return True, "available"
 
 
+# A detection wider than this share of the frame is not an object, it is the
+# image. See the raise in `detect`.
+MAX_DETECTION_FRAME_FRACTION = 0.60
+
+
 class GroundingDinoDetector:
     """Text-prompted box detection."""
 
@@ -74,7 +79,34 @@ class GroundingDinoDetector:
         if len(results["boxes"]) == 0:
             return None
         best = int(torch.argmax(results["scores"]))
-        return results["boxes"][best].cpu().numpy()
+        box = results["boxes"][best].cpu().numpy()
+
+        # A box covering nearly the whole frame is argmax latching onto
+        # nothing, not a detection. Grounding DINO always returns its
+        # highest-scoring box, and when the phrase matches nothing in
+        # particular that box is the image.
+        #
+        # Checking real27's scan for the tea box returned [6, 3, 1912, 1075] on
+        # a 1920x1080 frame, 98 per cent of the area, on 5 of 14 sampled
+        # frames. Read as detections they said the carton was present in every
+        # scan frame. It was not on the mat at all.
+        #
+        # Refuse rather than return it. A caller cannot tell a real box from
+        # this one, and the failure is silent: the same defect family as
+        # `_overflow`, a number that describes a failure and is never read.
+        height, width = image_bgr.shape[:2]
+        area = float(max(box[2] - box[0], 0) * max(box[3] - box[1], 0))
+        fraction = area / float(width * height)
+        if fraction > MAX_DETECTION_FRAME_FRACTION:
+            raise ValueError(
+                f"Grounding DINO returned a box covering {fraction * 100:.0f} "
+                f"per cent of the frame for {prompt!r}, over "
+                f"{MAX_DETECTION_FRAME_FRACTION * 100:.0f}. That is argmax with "
+                f"nothing to latch onto, not a detection. Either the object is "
+                f"absent from this frame, or the prompt names something the "
+                f"detector cannot find."
+            )
+        return box
 
 
 class Sam2Segmenter:
