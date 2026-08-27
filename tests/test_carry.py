@@ -17,6 +17,7 @@ from wristview.carry import (
     contact_onsets,
     grasp_centre,
     point_on_ray_closest_to,
+    rest_precedes_contact,
     resting_pose,
     solve_carried,
 )
@@ -224,7 +225,19 @@ def lifted_clip():
             lift[i] = np.array([0.15 * (i - 12) / 18, 0.0, height])
 
     truth = REST[None, :] + lift
-    landmarks = np.stack([_hand_at(p) for p in truth])
+
+    # The hand reaches IN. It is not on the object at frame 0.
+    #
+    # The fixture used to put the hand at the object from the first frame,
+    # which meant contact began at frame 0 and no resting window existed
+    # before it. Real footage does not look like that: real26 saw the hand
+    # arrive at frame 57 of 439. Modelling the approach is what lets
+    # `rest_precedes_contact` be tested against a clip that should pass it.
+    APPROACH = 8
+    hand_at = truth.copy()
+    for i in range(APPROACH):
+        hand_at[i] = truth[i] + np.array([0.0, -0.40 * (APPROACH - i) / APPROACH, 0.10])
+    landmarks = np.stack([_hand_at(p) for p in hand_at])
     hand_valid = np.ones(count, dtype=bool)
 
     plane_poses = np.repeat(np.eye(4)[None], count, axis=0)
@@ -246,7 +259,8 @@ def test_the_tracked_object_leaves_the_table(lifted_clip):
     rest = np.eye(4)
     rest[:3, 3] = REST
     poses, valid, report = solve_carried(
-        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, onsets
+        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, onsets,
+        (0, 8),
     )
     heights = poses[valid][:, 2, 3]
     assert heights.max() - heights.min() > 0.15, (
@@ -264,7 +278,8 @@ def test_the_carried_object_follows_the_truth(lifted_clip):
     rest = np.eye(4)
     rest[:3, 3] = REST
     poses, valid, report = solve_carried(
-        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, onsets
+        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, onsets,
+        (0, 8),
     )
     runs = [tuple(r) for r in report["contact_runs"]]
     carried = [i for run in runs for i in range(*run)]
@@ -282,7 +297,8 @@ def test_frames_outside_contact_keep_the_plane_answer(lifted_clip):
     rest = np.eye(4)
     rest[:3, 3] = REST
     poses, _, report = solve_carried(
-        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, onsets
+        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, onsets,
+        (0, 8),
     )
     before = min(run[0] for run in report["contact_runs"])
     assert np.allclose(poses[:before, :3, 3], REST)
@@ -293,7 +309,7 @@ def test_a_clip_with_no_contact_is_left_entirely_alone(lifted_clip):
     rest = np.eye(4)
     rest[:3, 3] = REST
     poses, valid, report = solve_carried(
-        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, []
+        plane_poses, plane_valid, rays, cameras, landmarks, hand_valid, rest, [], (0, 8)
     )
     assert report["frames_carried"] == 0
     assert np.allclose(poses, plane_poses)
@@ -302,3 +318,46 @@ def test_a_clip_with_no_contact_is_left_entirely_alone(lifted_clip):
 def test_grasp_centre_sits_between_the_fingertips():
     hand = _hand_at(REST)
     assert np.allclose(grasp_centre(hand), hand[list(FINGERTIPS)].mean(axis=0))
+
+
+class TestRestPrecedesContact:
+    """The resting pose must be measured BEFORE the hand arrives.
+
+    real26/bm demo_1: no object was detected until frame 352, so the first
+    still run was 360 to 510, after the release. It was used to attach the
+    object at contact frame 243. The carried object solved to a median 7.06 cm
+    below the desk across 109 frames, and every other metric passed.
+    """
+
+    def test_a_rest_run_after_contact_is_refused(self):
+        problem = rest_precedes_contact((360, 510), [243, 400])
+        assert problem is not None
+        assert "360" in problem and "243" in problem
+
+    def test_a_rest_run_before_contact_is_accepted(self):
+        assert rest_precedes_contact((0, 90), [100, 300]) is None
+
+    def test_a_rest_run_ending_exactly_at_contact_is_accepted(self):
+        assert rest_precedes_contact((0, 100), [100]) is None
+
+    def test_a_rest_run_ending_one_frame_late_is_refused(self):
+        assert rest_precedes_contact((0, 101), [100]) is not None
+
+    def test_no_contact_means_nothing_to_check(self):
+        assert rest_precedes_contact((360, 510), []) is None
+
+    def test_solve_carried_raises_rather_than_returning_a_wrong_carry(self, lifted_clip):
+        """The guard lives in the function, so every caller is protected."""
+        _, plane_poses, plane_valid, rays, cameras, landmarks, hand_valid = lifted_clip
+        onsets = contact_onsets(
+            landmarks, hand_valid, REST,
+            object_radius_m=0.02, enter_m=0.03, min_frames=3,
+        )
+        assert onsets, "fixture must produce a contact for this test to mean anything"
+        rest = np.eye(4)
+        rest[:3, 3] = REST
+        with pytest.raises(ValueError, match="does not END before contact"):
+            solve_carried(
+                plane_poses, plane_valid, rays, cameras, landmarks, hand_valid,
+                rest, onsets, (onsets[0] + 10, onsets[0] + 50),
+            )

@@ -536,13 +536,29 @@ def _estimate_episode(
                 enter_m=float(carry_cfg.get("contact_margin_m", 0.03)),
                 min_frames=int(carry_cfg.get("min_contact_frames", 3)),
             )
-            object_poses, object_valid, carry_report = carry.solve_carried(
-                object_poses, object_valid, object_rays, object_ray_origins,
-                hand_world, hand_valid, rest_pose, onsets,
-                release_ray_m=float(carry_cfg.get("release_ray_m", 0.06)),
-                release_frames=int(carry_cfg.get("release_frames", 3)),
-            )
-            carry_report["resting_pose"] = rest_report
+            # A resting pose measured after the release describes where the
+            # object ended up, not where it started. Solving the carry from it
+            # produces a complete, plausible, wrong trajectory. Leave the
+            # carried frames unsolved instead and say so.
+            rest_run = tuple(rest_report["rest_run"])
+            problem = carry.rest_precedes_contact(rest_run, onsets)
+            if problem is not None:
+                log.error("%s: CARRY NOT SOLVED. %s", clip_id, problem)
+                carry_report = {
+                    "frames_carried": 0,
+                    "contact_runs": [],
+                    "resting_pose": rest_report,
+                    "rejected": problem,
+                    "onsets": [int(o) for o in onsets],
+                }
+            else:
+                object_poses, object_valid, carry_report = carry.solve_carried(
+                    object_poses, object_valid, object_rays, object_ray_origins,
+                    hand_world, hand_valid, rest_pose, onsets, rest_run,
+                    release_ray_m=float(carry_cfg.get("release_ray_m", 0.06)),
+                    release_frames=int(carry_cfg.get("release_frames", 3)),
+                )
+                carry_report["resting_pose"] = rest_report
             for index in range(count):
                 if object_source[index] != "plane" and object_valid[index]:
                     object_source[index] = "carried"

@@ -269,6 +269,22 @@ outliers, zero dropped frames.
 The fix is one comparison: the still run must end before the first contact
 frame, or there is no valid resting pose and the carry cannot be solved.
 
+**Fixed 2026-08-27.** `carry.rest_precedes_contact` states the rule and
+`solve_carried` raises on it, so every caller is protected rather than just
+Stage 3. Stage 3 catches it first, logs why, and leaves the carried frames
+unsolved rather than filling them with a wrong answer: an object whose
+position is unknown during the carry is honest, and one placed 7 cm under the
+desk is not. Checked against the real numbers, it rejects demo_1's
+`(360, 510)` against contact at 243 and accepts demo_0's `(0, 100)` against
+contact at 100.
+
+Fixing it exposed a second thing. The `lifted_clip` test fixture put the hand
+on the object from frame 0, so contact began at frame 0 and no resting window
+could exist before it. Real footage does not look like that: real26 saw the
+hand arrive at frame 57 of 439. The fixture now models the approach, which is
+what lets the guard be tested against a clip that should pass it. A fixture
+that cannot represent the correct case cannot test a rule about it.
+
 Row 25 is rule 6 in CLAUDE.md, a fourth time. `standoff_m` sets how far the
 wrist camera sits from the finger tips and the rig decides it. It was optional
 and shipped null, so Stage 4 warned that the wrist camera could not be checked,

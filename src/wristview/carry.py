@@ -191,6 +191,42 @@ def _distance_to_ray(
     return float(np.linalg.norm(offset - float(offset @ unit) * unit))
 
 
+def rest_precedes_contact(rest_run: tuple[int, int], onsets: list[int]) -> str | None:
+    """Return why the resting pose cannot be used, or None if it can.
+
+    `resting_pose` takes the first sustained still run. `solve_carried` then
+    attaches the object to the hand at the contact frame, using that run's
+    position. The whole arrangement only works if the object was still THERE
+    BEFORE the hand arrived. Neither function checked it.
+
+    real26/bm demo_1: the detector found no object until frame 352, so the
+    first still run was frames 360 to 510, after the release. `solve_carried`
+    used it to attach the object at contact frame 243, 117 frames earlier and
+    at a different place on the mat. The carried object solved to a median of
+    7.06 cm BELOW the desk across 109 frames, and Stage 4 reported the clip as
+    healthy: 510 of 510 registered, a hand on every frame, no velocity
+    outliers, no dropped frames.
+
+    This is not circular. `resting_pose` uses the object alone and `onsets`
+    are computed from it, so checking the order afterwards tests the
+    assumption rather than assuming it.
+    """
+    start, stop = int(rest_run[0]), int(rest_run[1])
+    if not onsets:
+        return None
+    first = int(min(onsets))
+    if stop > first:
+        return (
+            f"the resting pose was measured on frames {start} to {stop}, but "
+            f"the hand first reaches the object at frame {first}. A rest run "
+            f"that does not END before contact is not where the object rested: "
+            f"it is where the object ended up. Attaching the object to the "
+            f"hand from it puts the carry in the wrong place, which on "
+            f"real26/bm demo_1 was 7.06 cm below the desk."
+        )
+    return None
+
+
 def solve_carried(
     plane_poses: np.ndarray,
     plane_valid: np.ndarray,
@@ -200,6 +236,7 @@ def solve_carried(
     hand_valid: np.ndarray,
     rest_pose: np.ndarray,
     onsets: list[int],
+    rest_run: tuple[int, int],
     release_ray_m: float = 0.06,
     release_frames: int = 3,
 ) -> tuple[np.ndarray, np.ndarray, dict]:
@@ -219,6 +256,13 @@ def solve_carried(
     Count `release_frames` frames of disagreement. End the run at the first of
     those frames. The object stopped following the hand at that frame.
     """
+    # The resting pose must predate the grasp. See `rest_precedes_contact`.
+    # This raises rather than returning a flag, because the alternative is a
+    # complete, plausible, wrong trajectory that every downstream gate passes.
+    problem = rest_precedes_contact(rest_run, onsets)
+    if problem is not None:
+        raise ValueError(problem)
+
     count = len(plane_poses)
     poses = plane_poses.copy()
     valid = plane_valid.copy()
