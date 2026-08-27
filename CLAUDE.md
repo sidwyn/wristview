@@ -86,6 +86,18 @@ When you add a metric, make something read it and act on it.
 
 ## Config traps
 
+- `ingest.detect_workspace_segment` costs 269 s per demo, which is 2.24 h
+  across 30 takes. It runs 960 LightGlue pairs to find the manipulation
+  inside a long clip. Set it to `false` for takes that ARE the manipulation:
+  10 s, no taps, gated by `check_take` on length and hand-free ends. real27
+  validated this — frames kept 183 of 215 with blur 32 in both runs, files
+  identical by sha256, stage 0 fell from 269 s to about 5 s per demo.
+  **This validation does NOT transfer to takes with taps.** The group-C takes
+  have a tap at each end, which is the case the detection was written for.
+  Re-validate on the first group-C take before you apply it to thirty.
+  The blur threshold comes from the clip's own median, so a changed frame
+  population can silently change which frames are dropped. Compare by hash,
+  not by eye.
 - The full key is `scene.scale.aruco_marker_length_m`. The short form
   `scene.aruco_marker_length_m` raises an unknown-key error. real27 lost a
   command to this.

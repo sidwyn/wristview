@@ -185,29 +185,38 @@ rotation metadata in the same way. Do not create that risk.
 
 ### 4.2 The scan: 85 s, one continuous take, head camera only
 
-**Measured budget. The camera height is what counts, not the elapsed time.**
-real27 failed this section. It put 88% of its frames above 38 cm and only
-5.5% in the render band. Count the seconds out loud while you scan.
+**The gate is DISTANCE to the working area. It is not camera height.**
+This is the error that failed real27/2. Height was correct at 46.9% in the
+20 to 30 cm band, better than the scan that passed. But no frame came nearer
+than 29 cm to the working area, and 0 frames were within 25 cm. Distance
+combines height and sideways offset. A camera 25 cm high but 30 cm to one
+side is 39 cm away.
 
-| Time | Height | Purpose |
+**To be within 25 cm at 25 cm height you must be almost directly above the
+carton.** Go OVER the working area, not only around it.
+
+| Time | What to do | Purpose |
 |---|---|---|
-| 15 s | 80 to 100 cm | Room context. Do this first, then go down. |
-| 20 s | 40 to 60 cm, look down | Localisation. This is the viewpoint of the demo. |
-| **35 s** | **20 to 30 cm** | **The render band. The virtual camera is here.** |
-| 15 s | 15 to 20 cm | Margin below the render band. Do not go lower. |
+| 15 s | 80 to 100 cm above the desk | Room context. Do this first. |
+| 20 s | 40 to 60 cm, look down | Localisation. The viewpoint of the demo. |
+| **35 s** | **20 to 25 cm, DIRECTLY OVER the mat** | **The render band.** |
+| 15 s | 25 to 30 cm, over the mat, look across | Angles into the band. |
 
-**A minimum of 45 s of the 85 s must be below 30 cm.** This is 50 s in the
-table, which gives you margin.
+**How to do the 35 s pass.** Hold the camera 20 to 25 cm above the mat
+surface. The mat must fill the frame. Move across the mat in lines, as you
+read a page: 4 lines from left to right, then 4 lines from front to back.
+Pass directly over each start spot. Tilt the camera a small quantity on each
+line, so that the same area is seen from more than one angle.
 
-**Go around the mat. Do not stay on one side.** Divide the mat into 8
-sectors, as on a compass. The render band pass must enter all 8 sectors.
-real27 occupied 4 of 8, and that alone can fail the viewpoint gate. Move
-around the mat one time in the render band, then move around it again in the
-opposite direction.
+Do not orbit around the mat at this height. An orbit at the edge gives the
+correct height and the wrong distance. That is what real27/2 did.
 
-In the two low passes, look ACROSS the mat and also down at it. Move the
-camera in the directions in which the hand moves. Include the direction from
-which the hand comes. This prevents a blank render at the start of the clip.
+**Pass marks, measured against real26/d, which passed the viewpoint gate:**
+
+| Metric | real26/d, passed | real27/2, failed | Target |
+|---|---|---|---|
+| Frames within 0.25 m of the working area | 64 | **0** | 60 minimum |
+| Nearest frame | 0.19 m | 0.29 m | 0.20 m or nearer |
 
 Do not go below 15 cm. The lens cannot focus below 15 cm. Blurred training
 views make the full model less sharp, not only the part that you recorded
@@ -215,9 +224,13 @@ too near.
 
 **Take the carton out of the scanned scene. Off the mat is not sufficient.**
 In real27 the carton was off the mat, but it stayed on the desk at the right
-side. The splat then holds a ghost of the carton at that position, and the
-object detector finds it in the scan frames. Put the carton on a chair
-behind the camera. Then no frame of the scan contains it.
+side. The splat then holds a ghost of the carton at that position. Put the
+carton on a chair behind the camera.
+
+**Keep the marker clear.** Nothing may touch the printed square or the white
+border around it. No clip, no tape, no carton in front of it. In real27, id
+0 was detected in only 14 of 30 demo first frames, and the scan checks could
+not measure the band twice because of it.
 
 ### 4.3 Verify before you record 30 takes
 
@@ -235,6 +248,11 @@ anything. It answers five questions:
 | Does the demo start with no hand in the frame? | No hand in the first 30 frames |
 | Does the demo have the same rotation tag as the scan? | They must agree |
 | How far was the camera from marker id 0 in each scan frame? | 45 s minimum below 30 cm |
+
+Check 1 measures HEIGHT. Height is necessary and it is not sufficient.
+real27/2 passed on height and failed the real gate, which is DISTANCE to the
+working area. Only `close_range_coverage` measures distance. A pass on check
+1 does not predict a pass on check 2.
 | How many of the 8 sectors did the render band cover? | 8 of 8 |
 
 The camera distance comes from the apparent size of marker id 0. The marker
@@ -356,7 +374,15 @@ Right, 0 velocity flags of 510. The clean demo_0 gave 432/432 frames, 13.20
 px median, 14.83 px p90, stable identity, 0 flags. The take with the rig
 tracked BETTER on every metric.
 
-**The current clean baseline is real27 demo_0**: 300/300 frames detected,
+**Careful with the hand detection rate. The denominator changed.** The
+100% rates come from takes in which the hand was in the frame from frame 0.
+Those takes are rejected now, because they have no resting window. A correct
+take has no hand for about one second at each end, which is 40 frames of 200
+at 20 fps. Report the detection rate over the frames between the approach
+and the release. Do not report it over the full clip, and do not compare a
+new take against the old 100% figures.
+
+**The earlier clean baseline was real27/1 demo_0**: 300/300 frames detected,
 reprojection 6.03 px median and 9.17 px p90, identity stable Right, 0
 velocity flags. This is much better than real26. Compare the rigged takes
 against these numbers, not against real26.
