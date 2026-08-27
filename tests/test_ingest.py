@@ -118,6 +118,46 @@ class TestFilterFrames:
     def test_reports_the_threshold_it_used(self, tmp_path):
         paths = [write_frame(tmp_path / f"f{i}.png", i) for i in range(10)]
         _, stats = _filter_frames(paths, 0.30, 3.0, 0.15, 0)
-        assert stats["blur_threshold_used"] == pytest.approx(
-            max(0.30 * stats["sharpness_median"], 3.0), rel=1e-6
+        assert len(stats["blur_per_pass"]) == 1
+        entry = stats["blur_per_pass"][0]
+        assert entry["threshold"] == pytest.approx(
+            max(0.30 * entry["sharpness_median"], 3.0), abs=0.02
         )
+
+    def test_each_pass_is_judged_against_its_own_median(self, tmp_path):
+        """A soft close pass must not be culled by a sharp pass beside it.
+
+        On real26 a third, sharper pass raised the clip median from 132.8 to
+        149.6 and cost the low pass 18 frames it had previously kept. The
+        frames it cost were the lowest, because those are the blurriest, and
+        the reconstructed floor rose from 8.47 cm to 12.15 cm on identical
+        footage.
+        """
+        import numpy as np
+
+        # A sharp pass, and a soft pass whose own spread straddles the sharp
+        # pass's threshold. Pooled, the soft pass is judged against a median
+        # it did not set.
+        sharp = [write_frame(tmp_path / f"s{i}.png", i, blur=0) for i in range(10)]
+        soft = [write_frame(tmp_path / f"b{i}.png", 100 + i, blur=3 + i % 4)
+                for i in range(10)]
+        paths = sharp + soft
+        labels = np.array([0] * 10 + [1] * 10)
+
+        _, pooled = _filter_frames(paths, 0.60, 0.0, 0.90, 0)
+        _, split = _filter_frames(paths, 0.60, 0.0, 0.90, 0, segment_of=labels)
+
+        assert len(split["blur_per_pass"]) == 2
+        soft_entry = next(e for e in split["blur_per_pass"] if e["pass"] == 1)
+        sharp_entry = next(e for e in split["blur_per_pass"] if e["pass"] == 0)
+        # The soft pass sets a lower bar for itself than the sharp pass sets.
+        assert soft_entry["threshold"] < sharp_entry["threshold"]
+        # And it therefore keeps frames the pooled median would have culled.
+        assert split["kept"] > pooled["kept"]
+
+    def test_mislabelled_segments_raise(self, tmp_path):
+        import numpy as np
+
+        paths = [write_frame(tmp_path / f"f{i}.png", i) for i in range(5)]
+        with pytest.raises(ValueError, match="segment_of labels"):
+            _filter_frames(paths, 0.30, 0.0, 0.15, 0, segment_of=np.zeros(3, dtype=int))

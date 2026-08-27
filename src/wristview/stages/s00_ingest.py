@@ -34,13 +34,31 @@ def _filter_frames(
     blur_absolute_threshold: float,
     blur_max_drop_fraction: float,
     phash_min_distance: int,
+    segment_of: np.ndarray | None = None,
 ) -> tuple[list[Path], dict]:
     """Drop blurred and near-duplicate frames.
 
-    Blur is judged against the clip's own median sharpness. Variance of the
-    Laplacian scales with scene texture, so an absolute cut tuned on one room
+    Blur is judged against a median sharpness, because variance of the
+    Laplacian scales with scene texture and an absolute cut tuned on one room
     behaves differently in the next. The absolute threshold stays only as a
     floor for frames that carry no signal at all.
+
+    **Which median matters.** A scan shot as several passes at different
+    heights has genuinely different sharpness per pass: a close pass is soft
+    because the lens cannot focus that near, not because those frames are bad.
+    Judging every pass against one clip median therefore penalises exactly the
+    pass the capture SOP asks for.
+
+    Measured on real26. Two passes gave a clip median of 132.8 and a threshold
+    of 39.9, which kept 225 of 299 low-pass frames. Appending a third, sharper
+    pass raised the clip median to 149.6 and the threshold to 44.9, which kept
+    207. The extra pass silently discarded 18 frames of a different pass, and
+    the ones it discarded were the lowest, because those are the blurriest.
+    The reconstructed floor rose from 8.47 cm to 12.15 cm on identical footage.
+
+    So `segment_of` labels each frame with the pass it came from, and each pass
+    is judged against its own median. The drop cap applies per pass too, for
+    the same reason.
 
     Rejection is capped either way: dropping frames a reconstructor would have
     registered is worse than keeping a few soft ones.
@@ -62,24 +80,58 @@ def _filter_frames(
     sharpness_arr = np.array(sharpness)
     readable = sharpness_arr >= 0
     median = float(np.median(sharpness_arr[readable])) if readable.any() else 0.0
-    threshold = max(blur_relative_threshold * median, blur_absolute_threshold)
 
-    blur_mask = readable & (sharpness_arr >= threshold)
-    drop_fraction = 1.0 - blur_mask.mean()
-
-    if drop_fraction > blur_max_drop_fraction:
-        # Keep the sharpest allowed share rather than trusting a threshold
-        # that clearly does not fit this clip.
-        keep_count = max(1, int(round(len(frame_paths) * (1.0 - blur_max_drop_fraction))))
-        order = np.argsort(-sharpness_arr)
-        blur_mask = np.zeros(len(frame_paths), dtype=bool)
-        blur_mask[order[:keep_count]] = True
-        log.warning(
-            "blur threshold %.1f (%.2f x median %.1f) would drop %.0f%% of frames; "
-            "capped to %.0f%%",
-            threshold, blur_relative_threshold, median,
-            drop_fraction * 100, blur_max_drop_fraction * 100,
+    if segment_of is None:
+        segment_of = np.zeros(len(frame_paths), dtype=int)
+    segment_of = np.asarray(segment_of, dtype=int)
+    if len(segment_of) != len(frame_paths):
+        raise ValueError(
+            f"segment_of labels {len(segment_of)} frames and there are "
+            f"{len(frame_paths)}"
         )
+
+    blur_mask = np.zeros(len(frame_paths), dtype=bool)
+    per_segment: list[dict] = []
+    for label in sorted(set(segment_of.tolist())):
+        block = segment_of == label
+        usable = block & readable
+        if not usable.any():
+            continue
+        block_median = float(np.median(sharpness_arr[usable]))
+        threshold = max(blur_relative_threshold * block_median, blur_absolute_threshold)
+        keep = usable & (sharpness_arr >= threshold)
+        dropped = 1.0 - (keep.sum() / block.sum())
+        capped = False
+        if dropped > blur_max_drop_fraction:
+            # Keep the sharpest allowed share rather than trusting a threshold
+            # that clearly does not fit this pass.
+            keep_count = max(1, int(round(block.sum() * (1.0 - blur_max_drop_fraction))))
+            order = np.argsort(-np.where(block, sharpness_arr, -np.inf))
+            keep = np.zeros(len(frame_paths), dtype=bool)
+            keep[order[:keep_count]] = True
+            capped = True
+            log.warning(
+                "pass %d: blur threshold %.1f (%.2f x its own median %.1f) would "
+                "drop %.0f%% of its frames; capped to %.0f%%",
+                label, threshold, blur_relative_threshold, block_median,
+                dropped * 100, blur_max_drop_fraction * 100,
+            )
+        blur_mask |= keep
+        per_segment.append({
+            "pass": label,
+            "frames": int(block.sum()),
+            "sharpness_median": round(block_median, 2),
+            "threshold": round(threshold, 2),
+            "kept": int(keep.sum()),
+            "capped": capped,
+        })
+    if len(per_segment) > 1:
+        for entry in per_segment:
+            log.info(
+                "  pass %d: %d frames, median sharpness %.1f, threshold %.1f, kept %d",
+                entry["pass"], entry["frames"], entry["sharpness_median"],
+                entry["threshold"], entry["kept"],
+            )
 
     kept: list[Path] = []
     kept_hashes: list[np.uint64] = []
@@ -103,7 +155,7 @@ def _filter_frames(
         "kept": len(kept),
         "dropped_blur": int((~blur_mask).sum()),
         "dropped_duplicate": dropped_duplicate,
-        "blur_threshold_used": round(threshold, 3),
+        "blur_per_pass": per_segment,
         "sharpness_median": round(median, 3),
         "sharpness_mean": round(float(sharpness_arr[readable].mean()), 3) if readable.any() else 0.0,
         "sharpness_p10": round(float(np.percentile(sharpness_arr[readable], 10)), 3)
@@ -278,6 +330,23 @@ def run(ctx: RunContext) -> dict:
             dedup_distance = int(
                 cfg["phash_min_distance"] if is_scan else cfg.get("demo_phash_min_distance", 0)
             )
+            # A scan shot as several passes is judged pass by pass. The seams
+            # are given, not guessed: whoever concatenated the passes knows
+            # where they are, and a detector that guessed would be one more
+            # thing to be wrong.
+            boundaries = cfg.get("scan_pass_boundaries_s") if is_scan else None
+            segment_of = None
+            if boundaries:
+                extraction_fps_guess = fps if fps > 0 else info.fps
+                seconds = np.arange(len(extracted)) / max(extraction_fps_guess, 1e-9)
+                segment_of = np.searchsorted(
+                    np.asarray(sorted(float(b) for b in boundaries)), seconds, side="right"
+                )
+                log.info(
+                    "%s: %d pass(es) from boundaries %s, judged on their own medians",
+                    clip_id, len(set(segment_of.tolist())), list(boundaries),
+                )
+
             with rec.timed(f"filter.{clip_id}"):
                 kept, stats = _filter_frames(
                     extracted,
@@ -285,6 +354,7 @@ def run(ctx: RunContext) -> dict:
                     float(cfg.get("blur_absolute_threshold", 0.0)),
                     float(cfg["blur_max_drop_fraction"]),
                     dedup_distance,
+                    segment_of=segment_of,
                 )
             if not kept:
                 raise ValueError(f"{clip_id}: every frame was rejected as blurred or duplicate")

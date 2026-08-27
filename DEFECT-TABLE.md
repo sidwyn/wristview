@@ -51,6 +51,7 @@ something must fail on it, or it must not be computed.**
 | 23 | `StageMeta.to_dict` hand-listed its fields | the fields someone remembered to list | the record's contents | a new `config_overrides` field was dropped in silence the day it was added |
 | 24 | `resting_pose` returned the first sustained still run | that the object was still somewhere | whether it was still BEFORE the grasp | real26/bm demo_1 measured the rest position 117 frames after the release and carried the object 7 cm under the desk |
 | 25 | `render.wrist_camera.standoff_m` was optional and null | nothing, and warned about it | the camera-to-fingertip distance the rig sets | every take of real06b and real26 shipped with the wrist camera unchecked |
+| 26 | Blur threshold taken from the whole clip's median | the average sharpness of a mixed scan | whether a frame is soft for its own pass | appending a sharp pass cost the low pass 18 frames and raised the floor 8.47 to 12.15 cm on identical footage |
 
 ## Row 7, in detail
 
@@ -275,3 +276,37 @@ on every take of real06b and real26, and nothing stopped. It now raises when
 unset and rejects a value outside 0.05 to 1.0 m. `configs/default.yaml` carries
 0.25 m, the UMI placement, with a note that the 0.35 m it once held was a
 workaround for an 18 cm scan floor and must not be used to hide a scan again.
+
+
+## Row 26, in detail
+
+Another wrong population, and this one punishes the capture the SOP asks for.
+
+Stage 0 rejects blurred frames against a threshold of `0.30 x the clip's median
+sharpness`. That is right for a clip shot at one distance. A scan shot as
+several passes at different heights does not have one sharpness: a close pass
+is soft because the lens cannot focus that near, which is a property of the
+pass, not a fault in its frames.
+
+Measured on real26, on identical low-pass footage:
+
+| scan | clip median | threshold | low-pass frames kept | reconstructed floor |
+|---|---|---|---|---|
+| two passes | 132.8 | 39.9 | 225 of 299 | 8.47 cm |
+| three passes | 149.6 | 44.9 | 207 of 299 | 12.15 cm |
+
+Appending a third, sharper pass raised the bar for every other pass and cost
+the low pass 18 frames it had previously kept. The frames it cost were the
+lowest ones, because those are the blurriest, so the floor rose by 3.7 cm
+without a single frame of the low pass being reshot.
+
+`ingest.scan_pass_boundaries_s` now names the seams and each pass is judged
+against its own median, with the drop cap applied per pass too. The seams are
+given rather than detected: whoever concatenated the passes knows where they
+are, and a detector would be one more thing to be wrong.
+
+The general shape is worth stating, because it will recur. **A threshold
+computed from a population is only valid for a population that is homogeneous
+in the thing being thresholded.** Mixing two regimes into one median produces a
+threshold that is too strict for one and too loose for the other, and neither
+half is visibly wrong.

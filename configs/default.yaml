@@ -33,6 +33,19 @@ ingest:
   # focus, so an absolute threshold tuned on one room throws away a different
   # share of frames in the next. A fixed 40.0 discarded 48 percent of a scan
   # that COLMAP registered at 182 of 182.
+  # Seam times, in seconds, when the scan is several passes concatenated.
+  # Each pass is then judged for blur against its own median sharpness.
+  #
+  # A close pass is soft because the lens cannot focus that near, not because
+  # its frames are bad. Judged against one clip median it loses frames to the
+  # sharper passes beside it, and the frames it loses are the lowest, because
+  # those are the blurriest. On real26 appending a third pass raised the clip
+  # median from 132.8 to 149.6 and cost the low pass 18 frames it had kept
+  # before, which raised the reconstructed floor from 8.47 cm to 12.15 cm on
+  # identical footage.
+  #
+  # null treats the scan as one pass, which is right when it is one.
+  scan_pass_boundaries_s: null
   blur_relative_threshold: 0.30
   # Absolute floor for frames that are genuinely unusable, black or smeared.
   # 0 disables the absolute test.
