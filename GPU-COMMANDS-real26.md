@@ -96,11 +96,39 @@ Stop if the hash differs. Send it again rather than training on a damaged file.
 ## 4. Install, on the pod
 
 ```bash
-pip install gsplat opencv-python-headless numpy
+pip install --break-system-packages gsplat opencv-python-headless numpy
 python -c "import gsplat, torch; print(gsplat.__version__, torch.cuda.get_device_name(0))"
 ```
 
 The first `import gsplat` builds CUDA kernels and takes a few minutes.
+
+**`--break-system-packages` is needed on some pod images and harmless on the
+rest.** Newer RunPod images ship a PEP 668 externally-managed Python, which
+refuses a plain `pip install` with `error: externally-managed-environment` and
+suggests a venv. On a disposable pod the override is the right answer. Without
+it the install fails, and the next script dies on `ModuleNotFoundError: No
+module named 'cv2'` several steps later, which does not look like a pip
+problem.
+
+**Some pods take a direct TCP address rather than the proxy**, for example
+`ssh root@213.173.109.162 -p 18480 -i ~/.ssh/runpod`. Those honour a remote
+command argument normally, so `ssh host 'cmd'` works and `tools/pod_run.sh` is
+not needed. Use the script only for `*.ssh.runpod.io` proxy addresses.
+
+## Memory: size the image cache by VIEW COUNT, not by the last session
+
+The trainer keeps training images in host memory and moves one to the GPU per
+step. Before that change it cached every image on the card, which costs
+`width x height x 3 x 4` bytes per view: 24.9 MB at 1920x1080.
+
+- real26/a, 298 views: 7.4 GiB. Fine on a 24 GB card.
+- real26/bm, 586 views: 14.6 GiB. Ran out of memory at step 3000 with only
+  901k Gaussians, because the cache left nothing for the splat.
+
+The host-memory cache removes the ceiling: 24.9 MB over PCIe per step, about
+75 seconds across a 30,000 step run. Peak fell to 15.0 GiB at 4,999k
+Gaussians. If a future change reinstates a device cache, size it against the
+view count of the scan actually being trained.
 
 ## 5. Undistort, on the pod
 

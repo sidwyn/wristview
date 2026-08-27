@@ -309,9 +309,21 @@ def main() -> int:
         K = view["K"].copy()
         K[0] *= width / view["width"]
         K[1] *= height / view["height"]
+        # Keep the pixels in host memory, not on the GPU.
+        #
+        # Caching every training image on the card costs width x height x 3 x 4
+        # bytes each. At 1920x1080 that is 24.9 MB per view: fine for the 298
+        # views of real26/a at 7.4 GiB, fatal for the 586 views of the merged
+        # scan at 14.6 GiB, which left too little for the Gaussians and ran a
+        # 24 GB card out of memory at step 3000 with 901k Gaussians.
+        #
+        # One view moves to the GPU per step. That is 24.9 MB over PCIe per
+        # step, about 75 seconds across a 30000 step run, against a ceiling
+        # that otherwise scales with the number of training views. Pin the
+        # memory so the copy can overlap compute.
         cache.append({
             "rgb": torch.tensor(cv2.cvtColor(image, cv2.COLOR_BGR2RGB) / 255.0,
-                                dtype=torch.float32, device=device),
+                                dtype=torch.float32).pin_memory(),
             "viewmat": torch.tensor(view["world_to_cam"], dtype=torch.float32, device=device),
             "K": torch.tensor(K, dtype=torch.float32, device=device),
             "width": width, "height": height,
@@ -349,7 +361,7 @@ def main() -> int:
             with torch.no_grad():
                 for index in sorted(set(int(i) for i in picks)):
                     drawn, _, _ = render(cache[index], sh_degree)
-                    mse = float(((drawn - cache[index]["rgb"]) ** 2).mean())
+                    mse = float(((drawn - cache[index]["rgb"].to(device)) ** 2).mean())
                     scores.append(-10 * math.log10(max(mse, 1e-10)))
             return scores
 
@@ -364,8 +376,9 @@ def main() -> int:
             # alone is indifferent to whether an edge lands in the right place
             # as long as the average is right, which is what a splat gets
             # wrong first.
-            l1 = (rendered - view["rgb"]).abs().mean()
-            loss = (1.0 - ssim_weight) * l1 + ssim_weight * (1.0 - ssim(rendered, view["rgb"]))
+            target = view["rgb"].to(device, non_blocking=True)
+            l1 = (rendered - target).abs().mean()
+            loss = (1.0 - ssim_weight) * l1 + ssim_weight * (1.0 - ssim(rendered, target))
             # Hands the strategy the screen-space means so it can retain their
             # gradients. Densification is driven by that gradient, so this must
             # happen before backward or nothing is ever selected to split.
@@ -437,7 +450,7 @@ def main() -> int:
             if step % 1000 == 0:
                 peak = max(peak, torch.cuda.max_memory_allocated() / 2**30)
                 with torch.no_grad():
-                    error = float(((rendered - view["rgb"]) ** 2).mean().detach())
+                    error = float(((rendered - target) ** 2).mean().detach())
                     reported = float(loss.detach())
                     position_lr = optimizers["means"].param_groups[0]["lr"]
                 psnr = -10 * math.log10(max(error, 1e-10))

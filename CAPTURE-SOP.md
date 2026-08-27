@@ -60,6 +60,48 @@ does not carry a capture.
 
 ## 3. The scan
 
+### How low the main lens can usefully go
+
+**About 20 cm for real detail. About 15 cm for usable. Below that, mostly
+blur.**
+
+The wrist camera renders from a median height of 7.3 cm above the desk, so the
+scan has to reach down toward it or every wrist frame extrapolates. real26/a
+scanned no lower than 18.2 cm and 93 per cent of its render extrapolated
+downward from every training view at once.
+
+But coverage and detail pull against each other, and the main lens sets the
+limit. Measured on real26/b's low pass, Laplacian variance of registered
+frames against camera height above the desk:
+
+| height | median sharpness | share of the sharp value |
+|---|---|---|
+| 45-100 cm | 308 | 100% |
+| 30-45 cm | 244 | 79% |
+| 20-30 cm | 150 | 49% |
+| 15-20 cm | 91 | 29% |
+| 12-15 cm | 52 | 17% |
+| 8-10 cm | 47 | 15% |
+
+There is no cliff. Sharpness declines continuously, reaching half at about
+25 cm and a third at about 17 cm. And this table flatters the low end: Stage
+0's blur filter had already discarded 97 of 299 low-pass samples before these
+numbers were taken, so these are the survivors. On the raw clip, the seconds
+spent closest to the mat measured a median Laplacian variance of 16.8 against
+674 at the sharp start of the same pass.
+
+So a low pass is worth shooting, and it did what it was for: the reconstructed
+floor fell from 16.5 cm to 8.5 cm and usable wrist frames rose from 29 to 128.
+Just do not expect detail from it. Sweep low for coverage, and keep the bulk of
+the take at 20 cm and above where the lens still resolves.
+
+**Getting genuine detail lower needs a macro or ultrawide lens.** That is a
+future change and it brings its own intrinsics: a second lens means a second
+camera model, and the reconstruction has to be told which frames came from
+which. Do not mix lenses in one clip until that is built.
+
+### The passes
+
 One continuous take, about 30 seconds, in two phases.
 
 ### Phase 1 · wide orbit, about 12 seconds

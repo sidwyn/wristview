@@ -38,6 +38,13 @@ def main() -> int:
     parser.add_argument("--splat", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--views", type=int, default=12)
+    parser.add_argument("--all-views", action="store_true",
+                        help="measure every registered view. Needed for the "
+                             "per-height breakdown, because the low bands hold "
+                             "only a handful of frames each.")
+    parser.add_argument("--heights", default=None,
+                        help="JSON of {image name: {height_m, lapvar, low_pass}}. "
+                             "Groups PSNR by camera height above the desk.")
     parser.add_argument("--sh-degree", type=int, default=3)
     parser.add_argument("--stills", default=None)
     args = parser.parse_args()
@@ -57,7 +64,11 @@ def main() -> int:
     on_disk = {p.stem: p for p in sorted(image_dir.iterdir()) if p.is_file()}
 
     ordered = sorted(images.values(), key=lambda v: v["name"])
-    picks = np.linspace(0, len(ordered) - 1, min(args.views, len(ordered))).astype(int)
+    if args.all_views:
+        picks = np.arange(len(ordered))
+    else:
+        picks = np.linspace(0, len(ordered) - 1, min(args.views, len(ordered))).astype(int)
+    heights = json.loads(Path(args.heights).read_text()) if args.heights else {}
 
     stills = Path(args.stills) if args.stills else None
     if stills:
@@ -101,7 +112,8 @@ def main() -> int:
         value = 99.0 if mse <= 1e-12 else 10.0 * math.log10(1.0 / mse)
         scores.append(value)
         names.append(view["name"])
-        print(f"  {view['name']}: {value:.2f} dB", flush=True)
+        if not args.all_views or (slot + 1) % 100 == 0:
+            print(f"  {view['name']}: {value:.2f} dB", flush=True)
 
         if stills:
             left = (image[:, :, ::-1] * 255).astype(np.uint8)
@@ -114,7 +126,42 @@ def main() -> int:
             cv2.imwrite(str(stills / f"gate_{slot:02d}_{Path(view['name']).stem}.jpg"),
                         pair, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
+    # Break the score down by the height the training view was taken from.
+    #
+    # A blurry view does not only damage the splat where it was taken. The
+    # Gaussians it pulls on are shared, so soft low-pass frames can smear
+    # detail in views that were themselves sharp. Grouping by height is how
+    # that shows up: if the low bands score badly and the high bands are also
+    # worse than a scan without them, the coverage cost more than it bought.
+    bands = [(0.00, 0.10), (0.10, 0.12), (0.12, 0.15), (0.15, 0.20),
+             (0.20, 0.30), (0.30, 0.45), (0.45, 10.0)]
+    by_height = []
+    if heights:
+        h = np.array([heights.get(nm, {}).get("height_m", np.nan) for nm in names])
+        lap = np.array([heights.get(nm, {}).get("lapvar") or np.nan for nm in names])
+        low = np.array([bool(heights.get(nm, {}).get("low_pass")) for nm in names])
+        arr = np.array(scores)
+        for lo, hi in bands:
+            m = (h >= lo) & (h < hi) & np.isfinite(h)
+            if not m.any():
+                continue
+            by_height.append({
+                "band_cm": [lo * 100, min(hi, 1.0) * 100],
+                "views": int(m.sum()),
+                "psnr_median_db": round(float(np.median(arr[m])), 2),
+                "psnr_p10_db": round(float(np.percentile(arr[m], 10)), 2),
+                "psnr_min_db": round(float(arr[m].min()), 2),
+                "lapvar_median": round(float(np.nanmedian(lap[m])), 1),
+                "from_low_pass": int(low[m].sum()),
+            })
+        for entry in by_height:
+            print(f"  {entry['band_cm'][0]:5.0f}-{entry['band_cm'][1]:3.0f} cm  "
+                  f"{entry['views']:4d} views  PSNR median {entry['psnr_median_db']:6.2f} dB  "
+                  f"p10 {entry['psnr_p10_db']:6.2f}  lapvar {entry['lapvar_median']:7.1f}  "
+                  f"low-pass {entry['from_low_pass']:4d}", flush=True)
+
     payload = {
+        "by_height": by_height,
         "renderer": "gsplat",
         "splat": str(Path(args.splat).resolve()),
         "gaussian_count": int(params["means"].shape[0]),
