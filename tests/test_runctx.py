@@ -72,9 +72,9 @@ class TestRunContext:
         for stage, name in STAGE_DIRS.items():
             assert ctx.stage_dir(stage).name == name
 
-    def test_stops_at_stage_five(self):
-        # Stages 6 and 7 are deliberately not built.
-        assert max(STAGE_DIRS) == 5
+    def test_stops_at_stage_six(self):
+        # Stage 6 is the LeRobot export. Stage 7 is deliberately not built.
+        assert max(STAGE_DIRS) == 6
 
     def test_episode_dir_nests_under_the_stage(self, ctx):
         path = ctx.episode_dir(3, "demo_0")

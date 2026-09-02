@@ -52,6 +52,39 @@ ingest:
   blur_absolute_threshold: 3.0
   # Never drop more than this share of frames to blur, however bad the clip.
   blur_max_drop_fraction: 0.15
+  # Absolute blur floor for the SCAN, contrast-normalised so exposure does
+  # not fool it. The relative rule above fixed the case where a scan-wide
+  # threshold deleted a soft pass; it opened the opposite one, because a
+  # threshold that moves down with its pass PROTECTS a pass that is
+  # uniformly soft. real27's mat_pass kept 547 of 587 at a threshold of 3.0
+  # and about 11 of those were worth having.
+  #
+  # WHICH REGION the floor judges. 1 is the whole frame. Above 1 it is the
+  # sharpest tile of a square grid. Kept at 1: the region rule was tried on
+  # real31 and REJECTED. It moved that session's close pass only 8.7 to 17.8
+  # per cent while loosening real27's known-too-soft mat pass from 59.1 to
+  # 73.1, which is the fault the floor exists to catch. See
+  # `best_tile_normalised_variance` for what it is good for and what it is not.
+  blur_floor_tiles: 1
+  # THIS NUMBER IS PER ROOM. It is not a property of focus.
+  #
+  # Variance of the Laplacian scales with scene TEXTURE, which is why the
+  # per-pass rule above is relative. This floor is the one absolute number
+  # left, and it does not transfer between sessions.
+  #
+  # 0.0323 is the median of real26/d's registered views below 15 cm, shot over
+  # a woven mat. real31 is a bare bamboo desk. Measured there, a pass shot IN
+  # FOCUS at 1 to 3 m, beyond any depth-of-field limit, cleared 0.0323 on only
+  # 31.5 per cent of its frames. A pass in focus cannot be 68 per cent
+  # blurred: that is the floor reading another room's texture.
+  #
+  # So re-measure it per session, from a pass known to be in focus in THAT
+  # room, and take roughly its 1st percentile. real31's is 0.0085. Its job is
+  # to reject frames carrying no signal at all, which is what it was
+  # introduced for. Judging whether a whole pass is too soft is a different
+  # job that this number cannot do across rooms; Stage 1's registration rate
+  # answers that one on all the data rather than a sample.
+  blur_normalised_floor: 0.0323
   # Perceptual-hash Hamming distance below which two frames count as
   # duplicates. 0 disables deduplication.
   phash_min_distance: 2
@@ -64,6 +97,13 @@ ingest:
   max_horizontal_fov_deg: 100.0
   # Used only when EXIF and ARKit give nothing. A sane iPhone main-wide guess.
   fallback_focal_ratio: 0.85
+  # Which COLMAP camera model Stage 1 self-calibrates. null picks
+  # SIMPLE_RADIAL, whose ONE distortion term cannot describe the barrel an
+  # iPhone 0.5x ultra-wide produces at about 108 degrees. Set OPENCV
+  # (k1,k2,p1,p2) or OPENCV_FISHEYE (k1..k4) for an ultra-wide scan. Ignored
+  # when the focal length came from a real EXIF measurement, because the
+  # camera is then fixed rather than refined.
+  colmap_camera_model: null
   # Find the part of a demo clip that shows the workspace.
   #
   # A take holds more than the demonstration. Session real25 opened and closed
@@ -184,6 +224,18 @@ scene:
     prune_opacity_threshold: 0.005
     max_gaussians: 400000
     tile_size: 16
+    # How many Gaussians the MPS rasteriser keeps per tile. It pads each tile
+    # to this and SILENTLY DROPS the rest, so a score taken from a truncated
+    # render describes the cap, not the splat: real26's GPU splat read 6.39 dB
+    # at 128 where gsplat put it at 30.46. The scoring guard refuses to report
+    # when anything was dropped, which is why sept02_scan failed Stage 1 after
+    # training successfully, having dropped 566,107 pairs.
+    #
+    # Raised from 128 so a room-sized scan splat can be scored at all. This is
+    # a cap on a workaround, not a fix: the rasteriser is MPS-only and gsplat
+    # on CUDA draws these correctly. If a scan still overflows here, score it
+    # with tools/cuda_job/measure_splat.py rather than raising this further.
+    max_per_tile: 3072
 
 localize:
   # Below this fraction of registered frames, fall back to the ARKit trajectory.
@@ -414,13 +466,36 @@ render:
   # Tune mount_back_m and mount_up_m for the rig; raise aim_ahead_m to push
   # the finger tips further down the frame.
   wrist_camera:
-    # These three put the finger tips about 77 percent of the way down the
-    # frame, which is how DROID and Open X wrist views are framed.
     mount_back_m: 0.10      # behind the finger tips, along -z
     mount_up_m: 0.10        # above the jaw line, along -y
     aim_ahead_m: 0.14       # look this far beyond the finger tips
     grasp_offset_m: 0.02    # finger tips ahead of the gripper origin, matches retarget.origin_offset_m
-    fov_deg: 90.0
+    # Matches the wrist camera this project actually recorded. Measured from
+    # its calibration, wrist_K.npy at 1280x720: fx 1062.5, fy 943.6, which is
+    # 62.1 degrees horizontal and 41.8 vertical. It was 90.0, which is 28
+    # degrees wider than the real lens and spends a third of the frame on room
+    # the scan never reconstructed. On real27full, narrowing to 62.1 and
+    # pitching the mount raised median pixel coverage from 0.379 to 0.551 and
+    # took the clips clearing 0.50 from 2 of 30 to 18 of 30.
+    fov_deg: 62.1
+    # Pitch the camera down about its own right axis, after aiming. Position is
+    # unchanged, so this does not move the viewpoint and cannot affect the
+    # coverage gate.
+    #
+    # The mount puts the finger tips 22.38 degrees below the optical axis, and
+    # that angle is fixed by mount_back_m and mount_up_m; standoff_m scales the
+    # whole mount and leaves it alone. At 90 degrees the vertical half-angle is
+    # 29.4, so the tips were inside the frame. At 62.1 it is 18.7, so without
+    # pitch they fall off the bottom entirely and the gripper leaves the
+    # picture.
+    pitch_down_deg: 12.02
+    # Where the finger tips should land, as a fraction of frame height. This is
+    # not decoration: `mount.fingertip_row_fraction` computes the delivered
+    # value and `tests/test_mount_framing.py` fails when the two disagree.
+    #
+    # It exists because the comment above these keys claimed 77 per cent for
+    # months while the code delivered 86.6, and nothing compared them.
+    framing_row_fraction: 0.77
     # REQUIRED. How far the camera sits from the finger tips, in metres.
     # No default and no fallback: the rig decides this, not the code.
     #
@@ -450,3 +525,21 @@ render:
   draw_object: true
   write_preview_video: true
   preview_fps: 15
+
+# --- Stage 6, export -------------------------------------------------------
+export:
+  # Which clips enter the dataset. null means every clip Stage 5 rendered.
+  #
+  # Naming clips explicitly, rather than filtering on a metric here, keeps the
+  # REASON a clip was excluded in the run record instead of in a threshold.
+  # real31 rendered 28 clips of which 11 have a hand-identity crossing that
+  # Stage 3 calls INVALID: "the largest-box selector crossed between two hands
+  # mid-episode, and the result will look smooth while describing neither
+  # hand." Those render fine and must not be trained on.
+  clips: null
+  # The LeRobotDataset repo id. null gives wristview/<run_id>.
+  repo_id: null
+  # Folder holding the REAL wrist frames for arm C, one subfolder per clip,
+  # written by tools/extract_wrist_real.py. Required: every episode must carry
+  # all three cameras or A', B' and C would read different rows.
+  wrist_real_root: null
