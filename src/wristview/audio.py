@@ -236,7 +236,23 @@ def find_whistles(
         if len(found) < 2:
             return _finalise(found, expect)
         threshold = split_on_largest_gap(np.array([w.peak_z for w in found]))
-        if threshold > 0:
+        if threshold <= 0:
+            # No decisive step. That is the NORMAL case when every surviving
+            # candidate is a real whistle of similar loudness, so admitting
+            # them is right and refusing here would reject clean blocks.
+            #
+            # But it is also what an undetected mix looks like, and admitting
+            # a spurious burst invents a take and shifts every index after it.
+            # The two cannot be told apart from the levels alone, so this says
+            # so, and the CALLER carries the real guard: assert the whistle
+            # count. See `--require-whistles`.
+            log.warning(
+                "whistle levels gave no decisive gap, so all %d candidates "
+                "were admitted (peak z %s). Check the count.",
+                len(found),
+                sorted((round(w.peak_z) for w in found), reverse=True)[:12],
+            )
+        else:
             found = [w for w in found if w.peak_z >= threshold]
         return _finalise(found, expect)
 

@@ -85,6 +85,10 @@ def main() -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--manifest", default=None,
                     help="split_takes manifest, to write a per-take entry as well")
+    ap.add_argument("--require-whistles", type=int, default=11,
+                    help="fail unless exactly this many whistles are found. 0 disables. "
+                         "Self-calibration cannot notice a block that genuinely has 10 "
+                         "or 12, so the count is asserted rather than assumed")
     ap.add_argument("--expect-whistles", type=int, default=None)
     ap.add_argument("--z-min", type=float, default=None)
     ap.add_argument("--min-ms", type=float, default=300.0)
@@ -103,6 +107,15 @@ def main() -> int:
 
     if len(ego_whistles) < 2 or len(wrist_whistles) < 2:
         log.error("need at least two whistles in each recording to fit a rate")
+        return 1
+
+    if args.require_whistles and (len(ego_whistles) != args.require_whistles
+                                  or len(wrist_whistles) != args.require_whistles):
+        log.error("expected %d whistles in each recording, found %d ego and %d "
+                  "wrist. Detection self-calibrates and cannot notice a genuine "
+                  "miscount, so this stops rather than fitting a clock to "
+                  "mismatched events.",
+                  args.require_whistles, len(ego_whistles), len(wrist_whistles))
         return 1
 
     shift = coarse_offset(ego_audio, wrist_audio)

@@ -235,3 +235,39 @@ class TestSelfCalibration:
         at = int(17.0 * SR)
         signal[at:at + int(0.02 * SR)] += rng.normal(0.0, 0.9, int(0.02 * SR))
         assert len(find_whistles(signal)) == 3
+
+
+class TestNoDecisiveGap:
+    """When every candidate is equally loud there is no gap to cut at.
+
+    That is the normal case once the duration filter has removed the short
+    bursts, so admitting them is right and refusing would reject clean blocks.
+    It is also what an undetected mix looks like, and the two cannot be told
+    apart from levels alone. So the level rule says so and the CALLER asserts
+    the whistle count, which is the guard that actually catches a miscount.
+    """
+
+    def test_equally_loud_candidates_are_all_admitted(self, caplog):
+        rng = np.random.default_rng(21)
+        signal = rng.normal(0.0, 0.002, int(30.0 * SR))
+        for index, start in enumerate([2.0, 8.0, 14.0, 20.0, 26.0]):
+            burst = tone(0.75, amplitude=0.30 + 0.02 * index)
+            at = int(start * SR)
+            signal[at:at + len(burst)] += burst
+        with caplog.at_level("WARNING"):
+            found = find_whistles(signal)
+        assert len(found) == 5
+        # Not silent: the caller has to be told calibration was inconclusive.
+        assert "no decisive gap" in caplog.text
+
+    def test_an_explicit_threshold_still_works_when_calibration_cannot(self):
+        rng = np.random.default_rng(21)
+        signal = rng.normal(0.0, 0.002, int(30.0 * SR))
+        for index, start in enumerate([2.0, 8.0, 14.0, 20.0, 26.0]):
+            burst = tone(0.75, amplitude=0.30 + 0.02 * index)
+            at = int(start * SR)
+            signal[at:at + len(burst)] += burst
+        assert len(find_whistles(signal, z_min=20.0)) == 5
+
+    def test_a_clear_gap_does_not_raise(self):
+        assert len(find_whistles(block([2.0, 8.0, 14.0], total_s=20.0))) == 3

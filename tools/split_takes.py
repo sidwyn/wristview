@@ -121,6 +121,10 @@ def main() -> int:
     ap.add_argument("--wrist", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--block", required=True, help="block name, prefixes every clip id")
+    ap.add_argument("--require-whistles", type=int, default=11,
+                    help="fail unless exactly this many whistles are found. 0 disables. "
+                         "Self-calibration cannot notice a block that genuinely has 10 "
+                         "or 12, so the count is asserted rather than assumed")
     ap.add_argument("--expect-whistles", type=int, default=None,
                     help="take the N strongest candidates instead of trusting --z-min")
     ap.add_argument("--z-min", type=float, default=None,
@@ -183,6 +187,16 @@ def main() -> int:
     if len(whistles) < 2:
         log.error("need at least two whistles to bound one take. Lower --z-min, or "
                   "pass --expect-whistles to take the N strongest.")
+        return 1
+
+    # Detection self-calibrates, which means it cannot notice a block that
+    # genuinely carries 10 or 12 whistles instead of 11. Assert the count.
+    if args.require_whistles and len(whistles) != args.require_whistles:
+        log.error("found %d whistles, expected %d. A miscount shifts every take "
+                  "index after it, so this stops rather than cutting. Inspect the "
+                  "candidate table above, then pass --require-whistles %d if the "
+                  "block really is different.",
+                  len(whistles), args.require_whistles, len(whistles))
         return 1
 
     # Intervals between consecutive whistles. Each keeps BOTH bounding
