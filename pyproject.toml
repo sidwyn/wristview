@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Egocentric head-mounted video in, robot wrist-camera training views out."
 readme = "README.md"
 # 3.12 is verified for Stages 0 to 2 on Linux CUDA, which is the remote path in
-# `tools/pod_run.sh`. The old `<3.12` cap had no stated reason and blocked every
+# `tools/pod_stage2.sh`. The old `<3.12` cap had no stated reason and blocked every
 # current PyTorch container image, all of which ship 3.12. Stage 3 pulls in
 # mediapipe, which publishes cp312 wheels from 0.10.9 but has not been exercised
 # here on 3.12, so widen no further than 3.13 without testing that stage.
