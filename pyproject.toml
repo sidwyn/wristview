@@ -3,10 +3,25 @@ name = "wristview"
 version = "0.1.0"
 description = "Egocentric head-mounted video in, robot wrist-camera training views out."
 readme = "README.md"
-requires-python = ">=3.11,<3.12"
+# 3.12 is verified for Stages 0 to 2 on Linux CUDA, which is the remote path in
+# `tools/pod_run.sh`. The old `<3.12` cap had no stated reason and blocked every
+# current PyTorch container image, all of which ship 3.12. Stage 3 pulls in
+# mediapipe, which publishes cp312 wheels from 0.10.9 but has not been exercised
+# here on 3.12, so widen no further than 3.13 without testing that stage.
+requires-python = ">=3.11,<3.13"
 dependencies = [
     "numpy>=1.26",
     "scipy>=1.11",
+    # The floor is load-bearing, so do not lower it. `qc.py` and `marker.py`
+    # read the printed ArUco marker that gives the reconstruction metric scale.
+    # ArUco moved out of opencv_contrib into the main `objdetect` module in
+    # OpenCV 4.7.0, so plain `opencv-python` carries it at 4.9 and the contrib
+    # build is not needed. Below 4.7 it would be, and `cv2.aruco` would be
+    # missing at run time rather than at install time.
+    # Verified on a clean install of opencv-python 4.11.0.86 with no contrib
+    # package present: the marker fit over real31scan's 745 frames returns the
+    # same 390 detections and a byte-identical hash of every detected corner as
+    # a contrib build does. `tests/test_aruco_availability.py` holds that line.
     "opencv-python>=4.9",
     "pyyaml>=6.0",
     "tqdm>=4.66",
@@ -23,11 +38,23 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Installed from git; see BUILD-LOG.md. Kept optional so the pipeline degrades
-# to pycolmap SIFT when they are absent.
+# Kept optional so the pipeline degrades to pycolmap SIFT when they are absent.
+#
+# Archive URLs, not `git+https://`. pip lowercases a git URL before handing it
+# to git, and github then answers the lowercased path with an auth prompt, so
+# `pip install git+https://github.com/cvg/LightGlue.git` dies on
+# "could not read Username for 'https://github.com'". The codeload archive has
+# no such problem. Measured on a clean Ubuntu 24.04 pod: git URL fails in 2 s,
+# archive URL installs in 3 s.
+#
+# kornia is a real requirement, not a nicety: `lightglue/__init__.py` imports
+# `.aliked`, which imports `kornia.color`, so `import lightglue` raises
+# ModuleNotFoundError without it. LightGlue does not declare it, and installing
+# with `--no-deps` therefore produces a package that cannot be imported.
 matching = [
-    "lightglue",
-    "hloc",
+    "kornia>=0.7",
+    "lightglue @ https://github.com/cvg/LightGlue/archive/refs/heads/main.zip",
+    "hloc @ https://github.com/cvg/Hierarchical-Localization/archive/refs/heads/master.zip",
 ]
 # Large model weights. Every one of these has a documented fallback.
 perception = [
@@ -48,6 +75,13 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# The `matching` extra pins lightglue and hloc to archive URLs, and hatchling
+# refuses a direct reference without this opt-in. Leaving it out does not fail
+# quietly: `pip install -e .` dies with metadata-generation-failed and the
+# package cannot be installed at all.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wristview"]
