@@ -86,9 +86,9 @@ def main() -> int:
     ap.add_argument("--manifest", default=None,
                     help="split_takes manifest, to write a per-take entry as well")
     ap.add_argument("--expect-whistles", type=int, default=None)
-    ap.add_argument("--z-min", type=float, default=20.0)
+    ap.add_argument("--z-min", type=float, default=1000.0)
     ap.add_argument("--min-ms", type=float, default=300.0)
-    ap.add_argument("--max-ms", type=float, default=1500.0)
+    ap.add_argument("--max-ms", type=float, default=2000.0)
     args = ap.parse_args()
 
     setup(None, verbose=True)
@@ -167,26 +167,57 @@ def main() -> int:
 
     # Per-take entries, in each take's own timebase, so a consumer holding one
     # cut clip does not have to know where in the block it came from.
+    #
+    # THE VERDICT IS PER TAKE, NOT PER BLOCK. Sync quality is a property of
+    # the two whistles bounding a take. Condemning a whole block for one bad
+    # whistle throws away nine good takes to punish one: on block 2, whistle 9
+    # residual -63.3 ms while the first nine were all inside 26 ms. The
+    # threshold is unchanged at 50 ms; only the scope it is applied to is
+    # corrected.
     if args.manifest:
         manifest = json.loads(Path(args.manifest).read_text())
         clips = {}
         for clip_id, clip in manifest.get("clips", {}).items():
             start = float(clip["block_start_s"])
+
+            # The residuals at this take's own two bounding whistles.
+            bounds = []
+            for key in ("open_whistle_block_s", "close_whistle_block_s"):
+                if key not in clip:
+                    continue
+                nearest = int(np.argmin(np.abs(matched_ego - float(clip[key]))))
+                bounds.append(abs(float(residual_ms[nearest])))
+            local_worst = max(bounds) if bounds else worst
+
             # t_ego_clip = t_ego_block - start, and the same cut window was
             # used for the wrist, so the clip-local offset absorbs both.
             clips[clip_id] = {
                 "rate": rate,
                 "offset_s": rate * start + offset - start,
                 "block_start_s": start,
-                "verified": verified,
+                "bounding_residual_worst_ms": round(local_worst, 3),
+                "verified": local_worst <= MAX_RESIDUAL_MS,
             }
         payload["clips"] = clips
-        log.info("  wrote per-take entries for %d clips", len(clips))
+        good = sum(1 for c in clips.values() if c["verified"])
+        log.info("  per-take sync: %d of %d takes verified at %.0f ms",
+                 good, len(clips), MAX_RESIDUAL_MS)
+        for clip_id, clip in clips.items():
+            if not clip["verified"]:
+                log.warning("    %s UNSYNCED: bounding whistle residual %.1f ms",
+                            clip_id, clip["bounding_residual_worst_ms"])
+        payload["takes_verified"] = good
+        payload["takes_total"] = len(clips)
 
     out = Path(args.out).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(payload, indent=1))
     log.info("wrote %s", out)
+
+    # Non-zero only when NOTHING in the block is usable. A block with one bad
+    # whistle still delivers its other takes, and the caller should carry on.
+    if "takes_verified" in payload:
+        return 0 if payload["takes_verified"] else 1
     return 0 if verified else 1
 
 
