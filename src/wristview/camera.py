@@ -91,16 +91,22 @@ class Intrinsics:
 
 
 def estimate_from_exif(
-    width: int, height: int, focal_35mm: float | None, fallback_ratio: float
+    width: int,
+    height: int,
+    focal_35mm: float | None,
+    fallback_ratio: float,
+    focal_source: str = "exif_focal35",
 ) -> tuple[Intrinsics, str]:
     """Derive intrinsics from a 35mm-equivalent focal length when EXIF has one.
 
     Returns the intrinsics and the source label recorded in `intrinsics.json`.
+    `focal_source` says how the focal length was read, and is passed straight
+    through, because a measured focal and a lens label deserve different trust.
     """
     if focal_35mm and focal_35mm > 1.0:
         # 35mm film is 36mm wide. Focal in pixels scales with image width.
         fx = focal_35mm / 36.0 * width
-        return Intrinsics(width, height, fx, fx, width / 2.0, height / 2.0), "exif_focal35"
+        return Intrinsics(width, height, fx, fx, width / 2.0, height / 2.0), focal_source
 
     fx = fallback_ratio * width
     return Intrinsics(width, height, fx, fx, width / 2.0, height / 2.0), "fallback_guess"

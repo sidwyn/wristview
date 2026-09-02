@@ -36,6 +36,7 @@ STAGE_MODULES = {
     3: "s03_estimate",
     4: "s04_retarget",
     5: "s05_render",
+    6: "s06_export",
 }
 STAGE_NAMES = {
     0: "ingest",
@@ -44,10 +45,14 @@ STAGE_NAMES = {
     3: "estimate",
     4: "retarget",
     5: "render",
+    6: "export",
 }
-# Stages 6 and 7 are deliberately absent. The build plan stops at the first
-# rendered wrist view, and says to get buyer judgment before building export.
-LAST_STAGE = 5
+# Stage 6 is registered. It was written and verified end to end on a
+# 3-episode dataset on 27 August, but left unregistered pending buyer
+# judgment on the rendered wrist view. That judgment is given: real31's
+# renders were reviewed and accepted, so the export is now reachable.
+# Stage 7 remains deliberately absent.
+LAST_STAGE = 6
 
 
 def _load_stage(index: int):

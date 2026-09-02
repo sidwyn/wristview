@@ -200,3 +200,79 @@ def render_viewpoint_coverage(
             "only a capture change can fix"
         ),
     }
+
+
+def splat_pixel_coverage(
+    means: np.ndarray,
+    view_matrices: np.ndarray,
+    fx: float,
+    fy: float,
+    cx: float,
+    cy: float,
+    width: int,
+    height: int,
+    near_plane: float = 0.02,
+    far_plane: float = 1e10,
+    valid: np.ndarray | None = None,
+    stride: int = 1,
+) -> dict:
+    """Fraction of pixels holding at least one projected Gaussian centre.
+
+    `render_viewpoint_coverage` asks whether a camera stands somewhere the scan
+    stood. This asks a different question: whether the splat has anything to
+    draw where this camera looks. The two come apart. real27full's demo_0
+    frames 60 to 120 sit 1.8 to 5.8 cm from a scan view, which is excellent by
+    the first measure, and 47 per cent of their pixels hold no Gaussian centre
+    at all, because a 90 degree field of view from 23 cm looks past the edge of
+    a reconstruction that reaches 1.6 m.
+
+    Rendered alpha measures the same thing and needs a GPU. This needs the
+    centres and a projection, so it runs on the laptop before anything is
+    uploaded, which is the whole point.
+
+    Centres, not footprints: a Gaussian covers more than the pixel its centre
+    lands in, so this reads lower than rendered alpha. It is a lower bound on
+    coverage and the two track closely, measured on real27full at 0.996 mean
+    alpha where 10 or more centres land per pixel and 0.534 where none do.
+    """
+    means = np.ascontiguousarray(np.asarray(means, dtype=np.float32).reshape(-1, 3))
+    views = np.asarray(view_matrices, dtype=np.float64).reshape(-1, 4, 4)
+    if valid is not None:
+        views = views[np.asarray(valid, dtype=bool)]
+    views = views[::max(int(stride), 1)]
+    if not len(views) or not len(means):
+        return {"check": "splat_pixel_coverage", "frames": int(len(views)),
+                "passed": None, "note": "nothing to measure"}
+
+    pixels = int(width) * int(height)
+    fractions = np.empty(len(views), dtype=np.float64)
+    for index, world_to_cam in enumerate(views):
+        rotation = np.ascontiguousarray(world_to_cam[:3, :3].T, dtype=np.float32)
+        camera = means @ rotation + world_to_cam[:3, 3].astype(np.float32)
+        depth = camera[:, 2]
+        live = (depth > near_plane) & (depth < far_plane)
+        if not live.any():
+            fractions[index] = 0.0
+            continue
+        front = camera[live]
+        inv = 1.0 / front[:, 2]
+        u = (fx * front[:, 0] * inv + cx).astype(np.int32)
+        v = (fy * front[:, 1] * inv + cy).astype(np.int32)
+        inside = (u >= 0) & (u < width) & (v >= 0) & (v < height)
+        if not inside.any():
+            fractions[index] = 0.0
+            continue
+        hit = np.unique(v[inside].astype(np.int64) * width + u[inside])
+        fractions[index] = len(hit) / pixels
+
+    return {
+        "check": "splat_pixel_coverage",
+        "frames": int(len(views)),
+        "gaussians": int(len(means)),
+        "stride": int(stride),
+        "coverage_median": round(float(np.median(fractions)), 4),
+        "coverage_mean": round(float(fractions.mean()), 4),
+        "coverage_min": round(float(fractions.min()), 4),
+        "coverage_p10": round(float(np.percentile(fractions, 10)), 4),
+        "per_frame": [round(float(f), 4) for f in fractions],
+    }

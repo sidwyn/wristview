@@ -20,12 +20,31 @@ import numpy as np
 from ..camera import Intrinsics, estimate_from_exif
 from ..logging_setup import get
 from ..runctx import RunContext, StageRecorder, read_json, write_json
-from ..videoio import extract_frames, hamming, laplacian_variance, phash, probe
+from ..videoio import (
+    best_tile_normalised_variance,
+    extract_frames,
+    hamming,
+    laplacian_variance,
+    phash,
+    probe,
+)
 
 log = get(__name__)
 
 STAGE = 0
 NAME = "ingest"
+
+
+def _floor_measure_name(tiles: int) -> str:
+    """Name the region the absolute floor judges, so a log line cannot mislead.
+
+    The whole-frame and best-tile scales differ by roughly 3x on close footage.
+    A log that printed only the number would read identically for a gate that
+    had become three times stricter.
+    """
+    if tiles <= 1:
+        return "whole-frame"
+    return f"best-of-{tiles}x{tiles}"
 
 
 def _filter_frames(
@@ -34,6 +53,8 @@ def _filter_frames(
     blur_absolute_threshold: float,
     blur_max_drop_fraction: float,
     phash_min_distance: int,
+    blur_normalised_floor: float = 0.0,
+    blur_floor_tiles: int = 1,
     segment_of: np.ndarray | None = None,
 ) -> tuple[list[Path], dict]:
     """Drop blurred and near-duplicate frames.
@@ -67,17 +88,21 @@ def _filter_frames(
         return [], {"kept": 0, "dropped_blur": 0, "dropped_duplicate": 0}
 
     sharpness: list[float] = []
+    normalised: list[float] = []
     hashes: list[np.uint64] = []
     for path in frame_paths:
         image = cv2.imread(str(path))
         if image is None:
             sharpness.append(-1.0)
+            normalised.append(-1.0)
             hashes.append(np.uint64(0))
             continue
         sharpness.append(laplacian_variance(image))
+        normalised.append(best_tile_normalised_variance(image, blur_floor_tiles))
         hashes.append(phash(image) if phash_min_distance > 0 else np.uint64(0))
 
     sharpness_arr = np.array(sharpness)
+    normalised_arr = np.array(normalised)
     readable = sharpness_arr >= 0
     median = float(np.median(sharpness_arr[readable])) if readable.any() else 0.0
 
@@ -116,21 +141,56 @@ def _filter_frames(
                 label, threshold, blur_relative_threshold, block_median,
                 dropped * 100, blur_max_drop_fraction * 100,
             )
+        kept_relative = int(keep.sum())
+
+        # The absolute floor, and the reason it exists.
+        #
+        # The relative rule fixed the case where a scan-wide threshold deleted
+        # a soft pass. It opened the opposite one: because the threshold moves
+        # down with the pass, a pass that is uniformly soft PROTECTS itself.
+        # real27's mat_pass kept 547 of 587 at a threshold of 3.0, and about 11
+        # of those frames were worth having.
+        #
+        # The floor is contrast-normalised, so it is not fooled by exposure,
+        # and it is NOT subject to the drop cap above: a cap that rescues a
+        # pass from an absolute floor would reintroduce exactly the fault.
+        #
+        # `blur_floor_tiles` selects WHICH region the floor judges. At 1 it is
+        # the whole frame. Above 1 it is the sharpest tile of a square grid,
+        # which is the right measure for a pass shot close enough that depth of
+        # field, not blur, is what darkens the average. The two are on
+        # different scales and are NOT interchangeable: the whole-frame floor
+        # calibrated on real26/d is 0.0323 and the best-ninth floor calibrated
+        # on the same frames to keep the same 54.2 per cent is 0.1015. Changing
+        # one without the other silently changes the gate's strictness.
+        if blur_normalised_floor > 0:
+            keep = keep & (normalised_arr >= blur_normalised_floor)
         blur_mask |= keep
         per_segment.append({
             "pass": label,
             "frames": int(block.sum()),
             "sharpness_median": round(block_median, 2),
+            "normalised_median": round(float(np.median(normalised_arr[usable])), 4),
             "threshold": round(threshold, 2),
+            "normalised_floor": blur_normalised_floor,
+            "floor_tiles": blur_floor_tiles,
+            "kept_relative_only": kept_relative,
             "kept": int(keep.sum()),
+            "dropped_by_floor": kept_relative - int(keep.sum()),
             "capped": capped,
         })
     if len(per_segment) > 1:
         for entry in per_segment:
             log.info(
-                "  pass %d: %d frames, median sharpness %.1f, threshold %.1f, kept %d",
+                "  pass %d: %d frames, median sharpness %.1f (%s median %.4f), "
+                "relative threshold %.1f kept %d, then the %.4f %s floor kept %d "
+                "(dropped %d)",
                 entry["pass"], entry["frames"], entry["sharpness_median"],
-                entry["threshold"], entry["kept"],
+                _floor_measure_name(entry["floor_tiles"]),
+                entry["normalised_median"], entry["threshold"],
+                entry["kept_relative_only"], entry["normalised_floor"],
+                _floor_measure_name(entry["floor_tiles"]),
+                entry["kept"], entry["dropped_by_floor"],
             )
 
     kept: list[Path] = []
@@ -297,7 +357,11 @@ def run(ctx: RunContext) -> dict:
             )
 
             intrinsics, source_label = estimate_from_exif(
-                info.width, info.height, info.focal_35mm, float(cfg["fallback_focal_ratio"])
+                info.width,
+                info.height,
+                info.focal_35mm,
+                float(cfg["fallback_focal_ratio"]),
+                info.focal_source,
             )
 
             # The pipeline assumes a pinhole model. Ultra-wide footage breaks
@@ -355,6 +419,11 @@ def run(ctx: RunContext) -> dict:
                     float(cfg["blur_max_drop_fraction"]),
                     dedup_distance,
                     segment_of=segment_of,
+                    blur_normalised_floor=float(
+                        cfg.get("blur_normalised_floor", 0.0)
+                        if clip_id == "scan" else 0.0
+                    ),
+                    blur_floor_tiles=int(cfg.get("blur_floor_tiles", 1)),
                 )
             if not kept:
                 raise ValueError(f"{clip_id}: every frame was rejected as blurred or duplicate")
@@ -441,18 +510,36 @@ def run(ctx: RunContext) -> dict:
             # With no EXIF focal length the guess is only a starting point.
             # Say so, and let Stage 1 hand the camera to COLMAP to refine
             # rather than freezing a number nobody measured.
-            self_calibrate = source_label == "fallback_guess"
+            # Only a measured EXIF focal length is trusted enough to freeze.
+            # A fallback guess and a lens label are both starting points: the
+            # label states the lens's nominal focal length, and video crops the
+            # sensor away from it, so real27's 24mm label refined to the
+            # equivalent of 27mm. Hand both to COLMAP to refine rather than
+            # freezing a number nobody measured on this footage.
+            self_calibrate = source_label != "exif_focal35"
             intrinsics_out[clip_id] = {
                 **intrinsics.to_dict(),
                 "source": source_label,
                 "self_calibrate": self_calibrate,
-                "colmap_camera_model": "SIMPLE_RADIAL" if self_calibrate else "PINHOLE",
+                # SIMPLE_RADIAL carries ONE distortion term, which cannot
+                # describe the ~110 degrees of barrel an iPhone 0.5x ultra-wide
+                # produces. `colmap_camera_model` overrides it so an ultra-wide
+                # scan can be reconstructed with OPENCV (k1,k2,p1,p2) or
+                # OPENCV_FISHEYE (k1..k4) instead of being fitted with a model
+                # that cannot represent the lens.
+                "colmap_camera_model": str(
+                    cfg.get("colmap_camera_model")
+                    or ("SIMPLE_RADIAL" if self_calibrate else "PINHOLE")
+                ),
             }
             if self_calibrate:
                 log.info(
-                    "%s: no EXIF focal length. Stage 1 will self-calibrate a "
-                    "SIMPLE_RADIAL camera starting from f=%.0f px.",
-                    clip_id, intrinsics.fx,
+                    "%s: focal length is a %s, not a measurement. Stage 1 will "
+                    "self-calibrate a %s camera starting from f=%.0f px.",
+                    clip_id,
+                    "lens label" if source_label == "exif_lens_label" else "guess",
+                    intrinsics_out[clip_id]["colmap_camera_model"],
+                    intrinsics.fx,
                 )
             log.info(
                 "%s: kept %d of %d frames (blur %d, duplicate %d), fov %.1f deg from %s",

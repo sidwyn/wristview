@@ -1,4 +1,5 @@
 """Observe the tensor the policy actually stacks, not one computed alongside."""
+import json
 import os
 from pathlib import Path
 
@@ -14,14 +15,39 @@ from lerobot.utils.constants import OBS_IMAGES
 
 torch.set_num_threads(2)
 
-S = Path("/tmp/claude-501/-Users-sidwyn-Documents-Documents-Personal-Projects-atlas/4c7d9149-910a-457c-9850-0c4d7292cfb6/scratchpad")
+# The dataset to check comes from the command line. This was pinned to
+# "wristview/real27-test" under a scratchpad path, which is both a dataset
+# that no longer exists and a directory the 30 August reboot deleted. A tool
+# that can only check one vanished dataset cannot check the next one.
+#
+# HF_HUB_OFFLINE matters: LeRobotDataset resolves its version against the Hub
+# even for a purely local root, and a repo id the Hub has never heard of comes
+# back as a 401 that reads like an auth problem rather than a lookup for a
+# dataset that was never pushed.
+import sys
+os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+ROOT = Path(sys.argv[1] if len(sys.argv) > 1 else "runs/real31full/06_export/lerobot").resolve()
+REPO_ID = json.loads((ROOT / "meta" / "info.json").read_text()).get("repo_id") or f"wristview/{ROOT.parent.parent.name}"
 EGO, WRIST = "observation.images.ego", "observation.images.wrist"
+WRIST_REAL = "observation.images.wrist_real"
 STATE, ACTION = "observation.state", "action"
-base = LeRobotDataset(repo_id="wristview/real27-test", root=S / "lrdataset")
+print(f"checking {ROOT}\n  repo_id {REPO_ID}")
+base = LeRobotDataset(repo_id=REPO_ID, root=ROOT)
+print(f"  {base.meta.total_episodes} episodes, {base.meta.total_frames} frames, {base.meta.fps} fps")
 IMG = PolicyFeature(type=FeatureType.VISUAL, shape=(3, 360, 640))
 
-for label, cams in {"(a) ego only": [EGO], "(b) ego + wrist": [EGO, WRIST],
-                    "(c) wrist only": [WRIST]}.items():
+# The three arms of set 2, named as EXPERIMENT-PLAN section 5.3 names them.
+# Every arm reads the SAME rows; only the cameras differ. That is what makes
+# the paired error cancel and the fraction-closed number meaningful:
+#     fraction closed = (A' - B') / (A' - C)
+ARMS = {
+    "A' ego only            ": [EGO],
+    "B' ego + RENDERED wrist": [EGO, WRIST],
+    "C  ego + REAL wrist    ": [EGO, WRIST_REAL],
+    "B-only rendered wrist  ": [WRIST],
+}
+for label, cams in ARMS.items():
     inputs = {c: IMG for c in cams}
     inputs[STATE] = PolicyFeature(type=FeatureType.STATE, shape=(7,))
     cfg = DiffusionConfig(input_features=inputs,
@@ -40,7 +66,7 @@ for label, cams in {"(a) ego only": [EGO], "(b) ego + wrist": [EGO, WRIST],
         return _o(batch)
     policy.diffusion._prepare_global_conditioning = spy
 
-    ds = LeRobotDataset(repo_id="wristview/real27-test", root=S / "lrdataset",
+    ds = LeRobotDataset(repo_id=REPO_ID, root=ROOT,
         delta_timestamps={**{c: [i / base.meta.fps for i in cfg.observation_delta_indices] for c in cams},
                           STATE: [i / base.meta.fps for i in cfg.observation_delta_indices],
                           ACTION: [i / base.meta.fps for i in cfg.action_delta_indices]})

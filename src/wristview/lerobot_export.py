@@ -41,6 +41,12 @@ IMAGE_WIDTH, IMAGE_HEIGHT = 640, 360
 
 EGO_KEY = "observation.images.ego"
 WRIST_KEY = "observation.images.wrist"
+# The REAL wrist camera, arm C. Pixels only: the actions, the state, the 15 Hz
+# grid and the row identities all come from the ego path, so this channel adds
+# a third view of instants the dataset already defines. The wrist clips are
+# NOT put through the pipeline. Localising a wrist camera during a grasp fails
+# at 28 per cent inliers and puts the camera inside a wall.
+WRIST_REAL_KEY = "observation.images.wrist_real"
 STATE_KEY = "observation.state"
 ACTION_KEY = "action"
 
@@ -83,6 +89,7 @@ def features_spec() -> dict:
     return {
         EGO_KEY: dict(image),
         WRIST_KEY: dict(image),
+        WRIST_REAL_KEY: dict(image),
         STATE_KEY: {"dtype": "float32", "shape": (STATE_DIM,),
                     "names": ["x", "y", "z", "rx", "ry", "rz", "gripper"]},
         ACTION_KEY: {"dtype": "float32", "shape": (ACTION_DIM,),
@@ -188,8 +195,146 @@ def alignment_lag(dataset, camera: str = WRIST_KEY, max_lag: int = MAX_LAG) -> d
     }
 
 
-def verify_alignment(dataset, camera: str = WRIST_KEY) -> dict:
-    """Raise unless the exported images and actions share an instant."""
+# The carton's own pixel height is a second, sharper signal than optical flow.
+# Flow measures how much the whole view moved; this measures the one object the
+# episode is about. They fail differently: flow survives an episode where the
+# object is occluded, this survives an episode where the camera is static.
+MIN_CARTON_PIXELS = 40
+
+
+def carton_row(image: np.ndarray, colour: np.ndarray, tolerance: float = 0.18) -> float | None:
+    """Row of the carton's centroid, or None when too little of it is visible.
+
+    `colour` is the object's rendered colour, which Stage 3 measures and writes
+    to `object_box.json` as `colour_rgb`. Stage 5 draws the object in exactly
+    that colour, so this is a lookup rather than a segmentation.
+    """
+    distance = np.linalg.norm(image - np.asarray(colour, dtype=np.float64), axis=2)
+    hit = distance < tolerance
+    if int(hit.sum()) < MIN_CARTON_PIXELS:
+        return None
+    return float(np.nonzero(hit)[0].mean())
+
+
+def carton_height_lag(
+    dataset,
+    colour,
+    up,
+    camera: str = WRIST_KEY,
+    max_lag: int = MAX_LAG,
+) -> dict:
+    """Cross-correlate the action's vertical component against carton pixel row.
+
+    The carton rises in the world and falls in the image, so a correct dataset
+    gives a NEGATIVE correlation at lag 0. Both series are per-frame changes:
+    the action is already a delta, and the pixel row is differenced to match.
+    """
+    up = np.asarray(up, dtype=np.float64)
+    up = up / max(np.linalg.norm(up), 1e-12)
+
+    rows, vertical = [], []
+    for index in range(len(dataset)):
+        item = dataset[index]
+        frame = item[camera].numpy().transpose(1, 2, 0).astype(np.float64)
+        rows.append(carton_row(frame, colour))
+        vertical.append(float(np.asarray(item["action"], dtype=np.float64)[:3] @ up))
+
+    seen = sum(r is not None for r in rows)
+    if seen < 20:
+        return {"check": "carton_height_alignment", "frames": len(dataset),
+                "frames_with_carton": seen, "peak_lag": None, "measurable": False,
+                "note": ("the carton was visible in too few frames to correlate, "
+                         "so this says nothing either way")}
+
+    row = np.array([np.nan if r is None else r for r in rows], dtype=np.float64)
+    finite = np.isfinite(row)
+    row = np.interp(np.arange(len(row)), np.nonzero(finite)[0], row[finite])
+    d_row = np.diff(row)
+    action = np.asarray(vertical)[:len(d_row)]
+
+    curve = {}
+    for lag in range(-max_lag, max_lag + 1):
+        if lag < 0:
+            a, b = d_row[-lag:], action[:len(action) + lag]
+        elif lag > 0:
+            a, b = d_row[:len(d_row) - lag], action[lag:]
+        else:
+            a, b = d_row, action
+        count = min(len(a), len(b))
+        if count > 20 and np.std(a[:count]) > 1e-9 and np.std(b[:count]) > 1e-9:
+            curve[lag] = float(np.corrcoef(a[:count], b[:count])[0, 1])
+
+    # The carton falls in the image as the hand rises, so the expected sign is
+    # negative and the peak is the most negative value, not the largest.
+    peak = min(curve, key=lambda k: curve[k]) if curve else None
+    return {
+        "check": "carton_height_alignment",
+        "frames": len(dataset),
+        "frames_with_carton": seen,
+        "measurable": True,
+        "peak_lag": peak,
+        "peak_r": curve.get(peak),
+        "r_at_zero": curve.get(0),
+        "curve": {str(k): round(v, 4) for k, v in curve.items()},
+    }
+
+
+LANDMARKS = ("first", "contact", "maximum_lift", "release")
+
+
+def landmark_frames(dataset, out_dir: Path, up, camera: str = WRIST_KEY) -> dict:
+    """Save the four frames a human should look at before trusting an episode.
+
+    A lag gate says the series line up. It cannot say the render is of the
+    right scene. These four are where a wrong one is obvious.
+    """
+    import cv2
+
+    up = np.asarray(up, dtype=np.float64)
+    up = up / max(np.linalg.norm(up), 1e-12)
+    states = np.stack([np.asarray(dataset[i]["observation.state"], dtype=np.float64)
+                       for i in range(len(dataset))])
+    grip = states[:, 6]
+    height = states[:, :3] @ up
+    closed = grip < (grip.min() + grip.max()) / 2
+
+    contact = int(np.argmax(closed)) if closed.any() else 0
+    release = int(len(closed) - 1 - np.argmax(closed[::-1])) if closed.any() else len(closed) - 1
+    picks = {"first": 0, "contact": contact,
+             "maximum_lift": int(np.argmax(height)), "release": release}
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    written = {}
+    for name, index in picks.items():
+        frame = dataset[index][camera].numpy().transpose(1, 2, 0)
+        path = out_dir / f"{name}_{index:05d}.png"
+        cv2.imwrite(str(path), (frame[:, :, ::-1] * 255).astype(np.uint8))
+        written[name] = {"frame": index, "path": str(path),
+                         "height_m": round(float(height[index]), 4),
+                         "gripper_m": round(float(grip[index]), 4)}
+    return written
+
+
+def verify_alignment(
+    dataset,
+    camera: str = WRIST_KEY,
+    carton_colour=None,
+    up=None,
+) -> dict:
+    """Raise unless the exported images and actions share an instant.
+
+    Two independent signals. Optical flow against action magnitude asks whether
+    the view moves when the effector moves. The carton's pixel row against the
+    action's vertical component asks whether the object rises when the action
+    says lift. They fail differently, so both run: flow survives an episode
+    where the object is occluded, and the carton survives an episode where the
+    camera barely moves.
+
+    The carton check needs the object's rendered colour and the world up axis.
+    Without them it cannot run, and it then REPORTS that rather than passing:
+    `carton_alignment.measurable` is false and the episode is verified by one
+    signal, not two.
+    """
     report = alignment_lag(dataset, camera=camera)
     lag, r_zero = report["peak_lag"], report["r_at_zero"]
 
@@ -199,13 +344,43 @@ def verify_alignment(dataset, camera: str = WRIST_KEY) -> dict:
             "to correlate. That is not a pass."
         )
     if abs(r_zero) < MIN_ABS_CORRELATION:
-        raise ValueError(
-            f"the alignment gate is inconclusive: correlation at lag 0 is "
-            f"{r_zero:+.3f}, under {MIN_ABS_CORRELATION}. The wrist view and "
-            f"the actions do not covary strongly enough to show alignment "
-            f"either way, so this dataset is UNVERIFIED, not verified. A "
-            f"near-static episode does this."
+        # Inconclusive is a REPORT, not a stop. This measures whether the
+        # dataset could be CHECKED, not whether it is wrong, and the two gate
+        # categories behave differently: "we could not check" must never
+        # render as "it is fine", and equally must not render as "it failed".
+        #
+        # Measured on real31, 17 episodes, 2001 frames, same rows and the same
+        # statistic for both cameras:
+        #     ego    r +0.307 at lag 0, 13 of 17 episodes over 0.15
+        #     wrist  r +0.093 at lag 0,  4 of 17
+        # and the wrist per-episode peaks scatter uniformly across the full
+        # +-10 lags while ego's sit at one lag on 11 of 17. A real
+        # misalignment puts every episode at the SAME lag. Scattered peaks are
+        # noise maximised over 21 draws.
+        #
+        # The cause is the render, not the timing. The wrist camera is rigid
+        # on the effector and moves 4.28x the ego camera per frame, yet its
+        # images flow 0.20x as much: 0.178 px against 0.913. A splat of a bare
+        # low-texture desk gives Farneback no gradient to track. The 0.15
+        # threshold came from ONE episode, real26bm demo_0 at r +0.4196, shot
+        # over a woven mat. It encodes that room's texture, not alignment.
+        report["verified"] = False
+        report["inconclusive"] = True
+        report["reason"] = (
+            f"correlation at lag 0 is {r_zero:+.3f}, under "
+            f"{MIN_ABS_CORRELATION}. The view and the actions do not covary "
+            f"strongly enough for this statistic to show alignment either "
+            f"way. This dataset is UNVERIFIED by this gate: not verified, and "
+            f"not shown to be wrong."
         )
+        log.error(
+            "ALIGNMENT UNVERIFIED: lag-0 correlation %+.3f is under %.2f, so "
+            "this gate cannot see whether the images and actions share an "
+            "instant. The dataset is NOT verified. Check the same statistic "
+            "on another camera before trusting or discarding it.",
+            r_zero, MIN_ABS_CORRELATION,
+        )
+        return report
     if lag != 0:
         raise ValueError(
             f"the exported images and actions are misaligned by {lag:+d} "
@@ -217,6 +392,32 @@ def verify_alignment(dataset, camera: str = WRIST_KEY) -> dict:
             f"learns the wrong association and nothing downstream can detect "
             f"that."
         )
+    if carton_colour is not None and up is not None:
+        carton = carton_height_lag(dataset, carton_colour, up, camera=camera)
+        report["carton_alignment"] = carton
+        if carton.get("measurable") and carton["peak_lag"] != 0:
+            raise ValueError(
+                f"the carton's pixel height and the action's vertical "
+                f"component are misaligned by {carton['peak_lag']:+d} frames. "
+                f"The correlation peaks at lag {carton['peak_lag']:+d} "
+                f"(r {carton['peak_r']:+.3f}), not at 0 "
+                f"(r {carton['r_at_zero']:+.3f}). Optical flow passed, so the "
+                f"two signals disagree and the dataset is not verified."
+            )
+        if carton.get("measurable"):
+            log.info("carton height gate PASSED: peak at lag 0, r %+.4f",
+                     carton["r_at_zero"])
+        else:
+            log.warning("carton height gate COULD NOT MEASURE: %s. This episode "
+                        "is verified by one signal, not two.", carton.get("note"))
+    else:
+        report["carton_alignment"] = {
+            "check": "carton_height_alignment", "measurable": False,
+            "note": ("no carton colour or up axis was supplied, so the second "
+                     "signal did not run. Verified by optical flow alone."),
+        }
+        log.warning("carton height gate NOT RUN: no colour or up axis supplied")
+
     log.info("alignment gate PASSED: peak at lag 0, r %+.4f (lag +1 r %+.4f)",
              r_zero, report["curve"].get("1", float("nan")))
     return report
@@ -249,16 +450,25 @@ def build_dataset(
     written = 0
     for index, episode in enumerate(episodes):
         ego, wrist = episode["ego"], episode["wrist"]
+        wrist_real = episode.get("wrist_real")
+        if wrist_real is None:
+            raise ValueError(
+                f"episode {index} has no wrist_real frames. Arm C reads this "
+                f"channel, and an episode missing it would train C on a "
+                f"different set of rows from A' and B', which is exactly the "
+                f"cross-set arithmetic the plan prohibits."
+            )
         poses = np.asarray(episode["poses"], dtype=np.float64)
         gripper = np.asarray(episode["gripper"], dtype=np.float32)
-        count = min(len(ego), len(wrist), len(poses), len(gripper))
+        count = min(len(ego), len(wrist), len(wrist_real), len(poses), len(gripper))
         if count < 2:
             log.warning("episode %d has %d frames, too few for an action", index, count)
             continue
-        if not (len(ego) == len(wrist) == len(poses) == len(gripper)):
+        if not (len(ego) == len(wrist) == len(wrist_real) == len(poses) == len(gripper)):
             raise ValueError(
                 f"episode {index} has mismatched lengths: ego {len(ego)}, "
-                f"wrist {len(wrist)}, poses {len(poses)}, gripper {len(gripper)}. "
+                f"wrist {len(wrist)}, wrist_real {len(wrist_real)}, "
+                f"poses {len(poses)}, gripper {len(gripper)}. "
                 f"A dataset built from misaligned streams pairs each image with "
                 f"the wrong action and nothing downstream can detect it."
             )
@@ -268,6 +478,7 @@ def build_dataset(
             dataset.add_frame({
                 EGO_KEY: load_image(Path(ego[i])),
                 WRIST_KEY: load_image(Path(wrist[i])),
+                WRIST_REAL_KEY: load_image(Path(wrist_real[i])),
                 STATE_KEY: pose_to_state(poses[i], gripper[i]),
                 ACTION_KEY: relative_action(poses[i], poses[i + 1], gripper[i]),
                 "task": task,

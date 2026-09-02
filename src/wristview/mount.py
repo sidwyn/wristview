@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .camera import Intrinsics
 from .geometry import make_pose
 
 
@@ -41,6 +42,12 @@ def wrist_camera_offset(config: dict) -> np.ndarray:
         mount_up_m     how far above the jaw line, along -y
         aim_ahead_m    how far beyond the finger tips the camera looks. Larger
                        values push the finger tips lower in frame.
+        pitch_down_deg rotate the camera down about its own right axis, after
+                       aiming. Position is unchanged, so this cannot move the
+                       viewpoint or affect the coverage gate. It exists because
+                       the mount's aim is set in metres and the lens is set in
+                       degrees, and narrowing the lens to match the real camera
+                       drops the finger tips out of frame without it.
         grasp_offset_m distance from the gripper origin to the finger tips
                        along +z. Matches retarget.origin_offset_m.
         standoff_m     REQUIRED. How far the camera sits from the finger tips.
@@ -106,4 +113,95 @@ def wrist_camera_offset(config: dict) -> np.ndarray:
         right = right / norm
     down = np.cross(forward, right)
 
-    return make_pose(np.stack([right, down, forward], axis=1), eye)
+    pose = make_pose(np.stack([right, down, forward], axis=1), eye)
+
+    pitch = float(config.get("pitch_down_deg", 0.0))
+    if pitch:
+        angle = np.radians(-pitch)
+        rotation = np.array([
+            [1.0, 0.0, 0.0],
+            [0.0, np.cos(angle), -np.sin(angle)],
+            [0.0, np.sin(angle), np.cos(angle)],
+        ])
+        pose = pose @ make_pose(rotation, np.zeros(3))
+    return pose
+
+
+def fingertip_row_fraction(config: dict, width: int, height: int) -> float:
+    """Where the finger tips land, as a fraction of frame height.
+
+    The config carries the intended value in `framing_row_fraction` and this
+    computes the delivered one. They are compared in
+    `tests/test_mount_framing.py`.
+
+    The check exists because the comment on these keys read "about 77 percent
+    of the way down the frame" while the code put them at 86.6, and the two
+    were never compared. A number in a comment is a claim with no reader, which
+    is this project's most repeated defect.
+
+    Values above 1.0 mean the finger tips are below the bottom of the frame and
+    the gripper is not in the picture at all.
+    """
+    pose = wrist_camera_offset(config)
+    tips = np.array([0.0, 0.0, float(config.get("grasp_offset_m", 0.02))])
+    direction = np.linalg.inv(pose)[:3, :3] @ (tips - pose[:3, 3])
+    if direction[2] <= 1e-9:
+        raise ValueError(
+            "the finger tips are behind the wrist camera, so the mount is not "
+            "aimed at them. Check mount_back_m, mount_up_m and aim_ahead_m."
+        )
+    intrinsics = Intrinsics.from_fov(width, height, float(config["fov_deg"]))
+    row = intrinsics.fy * direction[1] / direction[2] + intrinsics.cy
+    return float(row / height)
+
+
+def assert_above_plane(
+    camera_positions: np.ndarray,
+    plane_normal: np.ndarray,
+    plane_offset: float,
+    clip_id: str = "",
+    valid: np.ndarray | None = None,
+) -> dict:
+    """Raise if any wrist camera is placed below the work surface.
+
+    `wrist_camera_offset` checks `standoff_m`, a parameter. Nothing checked the
+    result. real27 exported 309 cameras of 4,673 below the desk plane, the
+    lowest at -20.3 cm, and they rendered as black or as a flat blue wash.
+
+    A camera under the desk is not a viewpoint. There is no threshold to tune
+    here and no band where it is acceptable, so this raises rather than warns.
+
+    The report is returned as well as raised on, because the caller wants the
+    per-clip count even when it passes.
+    """
+    positions = np.asarray(camera_positions, dtype=np.float64).reshape(-1, 3)
+    normal = np.asarray(plane_normal, dtype=np.float64).reshape(3)
+    normal = normal / max(np.linalg.norm(normal), 1e-12)
+    keep = (np.ones(len(positions), dtype=bool) if valid is None
+            else np.asarray(valid, dtype=bool))
+
+    heights = positions @ normal - float(plane_offset)
+    below = keep & (heights < 0.0)
+    report = {
+        "check": "wrist_camera_above_desk",
+        "clip_id": clip_id,
+        "frames": int(keep.sum()),
+        "frames_below": int(below.sum()),
+        "lowest_m": round(float(heights[keep].min()), 4) if keep.any() else None,
+        "below_frames": [int(i) for i in np.nonzero(below)[0]],
+        "passed": not bool(below.any()),
+    }
+    if below.any():
+        worst = float(heights[below].min())
+        raise ValueError(
+            f"{clip_id or 'clip'}: {int(below.sum())} of {int(keep.sum())} wrist "
+            f"cameras are below the desk plane, the lowest at "
+            f"{worst * 100:.1f} cm. A camera under the work surface is not a "
+            f"viewpoint and renders as background. Frames "
+            f"{report['below_frames'][:12]}"
+            f"{' ...' if len(report['below_frames']) > 12 else ''}. "
+            f"Do not raise standoff_m to lift them: the mount is scaled along "
+            f"the GRIPPER's up axis, so when the gripper is rolled a larger "
+            f"standoff drives the camera further under, not clear of it."
+        )
+    return report

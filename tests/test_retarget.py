@@ -232,7 +232,7 @@ class TestResample:
         widths = np.linspace(0.02, 0.08, count)
         closed = np.zeros(count, dtype=bool)
 
-        out_poses, out_widths, out_closed, times = resample(
+        out_poses, out_widths, out_closed, times, _ = resample(
             poses, widths, closed, source_fps=60.0, target_hz=15.0
         )
         # One second of 60 fps input at 15 Hz gives 16 samples, ends included.
@@ -244,7 +244,7 @@ class TestResample:
         count = 61
         poses = np.repeat(np.eye(4)[None], count, axis=0)
         poses[:, 0, 3] = np.linspace(0, 2, count)
-        out_poses, _, _, times = resample(
+        out_poses, _, _, times, _ = resample(
             poses, np.zeros(count), np.zeros(count, dtype=bool), 60.0, 15.0
         )
         assert np.allclose(out_poses[:, 0, 3], 2.0 * times, atol=1e-6)
@@ -254,12 +254,12 @@ class TestResample:
         closed = np.zeros(count, dtype=bool)
         closed[30:] = True
         poses = np.repeat(np.eye(4)[None], count, axis=0)
-        _, _, out_closed, _ = resample(poses, np.zeros(count), closed, 60.0, 15.0)
+        _, _, out_closed, _, _ = resample(poses, np.zeros(count), closed, 60.0, 15.0)
         assert set(np.unique(out_closed)).issubset({True, False})
 
     def test_short_input_is_returned_unchanged(self):
         poses = np.repeat(np.eye(4)[None], 1, axis=0)
-        out, _, _, _ = resample(poses, np.zeros(1), np.zeros(1, dtype=bool), 60.0, 15.0)
+        out, _, _, _, _ = resample(poses, np.zeros(1), np.zeros(1, dtype=bool), 60.0, 15.0)
         assert len(out) == 1
 
 

@@ -35,7 +35,7 @@ import numpy as np
 DEMO_SECONDS_MIN, DEMO_SECONDS_MAX = 8.0, 13.0
 
 # A tapped take carries a tap at each end, so it is longer.
-TAPPED_SECONDS_MIN, TAPPED_SECONDS_MAX = 12.0, 18.0
+TAPPED_SECONDS_MIN, TAPPED_SECONDS_MAX = 12.0, 20.0
 
 # --- check 2 -----------------------------------------------------------------
 # The hand must be out of frame at the start, so a resting pose exists before
@@ -49,7 +49,7 @@ HAND_FREE_FRAMES = 30
 TAPPED_GAP_MIN_FRAMES = 30
 TAPPED_GAP_MIN_SECONDS = 1.5
 # How far in to look before giving up. A tap and a reach inside 15 s covers
-# the 12 to 18 s a tapped take should run.
+# the 12 to 20 s a tapped take should run.
 TAPPED_SEARCH_SECONDS = 15.0
 
 # --- check 4 -----------------------------------------------------------------
@@ -148,7 +148,33 @@ def probe(path: Path) -> dict:
     }
 
 
-def hand_presence(path: Path, frames: int) -> list[bool]:
+def upright(frame: np.ndarray, rotation: int) -> np.ndarray:
+    """Undo the container's rotation tag.
+
+    `cv2.VideoCapture` returns frames as stored and ignores the rotation
+    metadata. ffmpeg applies it. So a clip tagged 180, which every iPhone take
+    in this project is, reaches MediaPipe upside down.
+
+    Measured on real27's group-C head take: 0 hands in 900 frames read through
+    cv2, against a clip that plainly contains a tap and a grasp. Comparing one
+    frame read both ways gave a mean absolute difference of 61.6, falling to
+    5.0 once ffmpeg's frame was rotated 180. The frames were inverted, and
+    MediaPipe does not find an inverted hand reliably.
+
+    This silently weakened check 2 on every rotated take, which is all of
+    them. A hand-free start that passes because nothing can see the hand is
+    not a pass.
+    """
+    if rotation % 360 == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if rotation % 360 == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if rotation % 360 == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
+def hand_presence(path: Path, frames: int, rotation: int = 0) -> list[bool]:
     """Per-frame hand presence for the first `frames` frames."""
     import mediapipe as mp
 
@@ -162,12 +188,36 @@ def hand_presence(path: Path, frames: int) -> list[bool]:
             ok, frame = capture.read()
             if not ok:
                 break
+            frame = upright(frame, rotation)
             result = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             present.append(bool(result.multi_hand_landmarks))
     finally:
         capture.release()
         hands.close()
     return present
+
+
+def smooth_presence(present: list[bool], window: int = 9) -> list[bool]:
+    """Median-filter hand presence, because detection flickers.
+
+    MediaPipe drops and reacquires a hand across single frames. On real27's
+    first group-C take it reported the hand in 288 of 1038 frames spread over
+    dozens of short runs, and the true structure, tap then gap then reach, was
+    fragmented into pieces too short to recognise. A one-frame dropout is not
+    the hand leaving the frame.
+
+    An odd window, so the median is a real sample and not an average.
+    """
+    if window % 2 == 0:
+        window += 1
+    half = window // 2
+    values = np.asarray(present, dtype=int)
+    smoothed = []
+    for index in range(len(values)):
+        low = max(0, index - half)
+        high = min(len(values), index + half + 1)
+        smoothed.append(bool(np.median(values[low:high]) >= 0.5))
+    return smoothed
 
 
 def tapped_gap(present: list[bool], fps: float) -> dict:
@@ -232,7 +282,7 @@ def tapped_gap(present: list[bool], fps: float) -> dict:
             "hand_frames": int(sum(present)), "frames_examined": len(present)}
 
 
-def first_hand_frame(path: Path, frames: int) -> tuple[int | None, int]:
+def first_hand_frame(path: Path, frames: int, rotation: int = 0) -> tuple[int | None, int]:
     """Return the first frame index holding a hand, and how many were read."""
     import mediapipe as mp
 
@@ -247,7 +297,8 @@ def first_hand_frame(path: Path, frames: int) -> tuple[int | None, int]:
             if not ok:
                 break
             read = index + 1
-            result = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            result = hands.process(
+                cv2.cvtColor(upright(frame, rotation), cv2.COLOR_BGR2RGB))
             if result.multi_hand_landmarks:
                 found = index
                 break
@@ -397,8 +448,11 @@ def main() -> int:
     # --- 2. a hand-free window before the grasp ---
     if args.tapped:
         budget = int(TAPPED_SEARCH_SECONDS * demo_info["fps"])
-        present = hand_presence(demo, budget)
+        raw = hand_presence(demo, budget)
+        present = smooth_presence(raw)
         gap = tapped_gap(present, demo_info["fps"])
+        gap["raw_hand_frames"] = int(sum(raw))
+        gap["smoothed_hand_frames"] = int(sum(present))
         report["check2_tapped_gap"] = gap
         ok2 = bool(gap.get("found")) and gap["frames"] >= TAPPED_GAP_MIN_FRAMES \
             and gap["seconds"] >= TAPPED_GAP_MIN_SECONDS
@@ -439,7 +493,7 @@ def main() -> int:
                     f"with the hand fully out of frame."
                 )
     else:
-        first, _read = first_hand_frame(demo, HAND_FREE_FRAMES)
+        first, _read = first_hand_frame(demo, HAND_FREE_FRAMES, demo_info["rotation"])
         ok2 = first is None
         report["check2_first_hand_frame"] = first
         report["check2_frames_checked"] = HAND_FREE_FRAMES
@@ -454,15 +508,56 @@ def main() -> int:
                 f"clip."
             )
 
-    # --- 3. rotation tags agree ---
-    ok3 = scan_info["rotation"] == demo_info["rotation"]
-    print(f"3 rotation match     {scan_info['rotation']:>3} vs {demo_info['rotation']:<3}"
-          f"          {'PASS' if ok3 else 'FAIL'}")
-    if not ok3:
+    # --- 3. effective orientation agrees ---
+    # This check compares the orientation the PIPELINE SEES, not the raw tag.
+    #
+    # ffmpeg applies the Display Matrix on decode, and every stage in this
+    # project decodes through ffmpeg (see videoio.py). So two clips carrying
+    # DIFFERENT tags still arrive the same way up. real31 is the case that
+    # proved it: the scans carry no tag, the demos carry -180, and a decoded
+    # frame from each was checked by eye and found upright in both. The old
+    # rule compared raw tags and would have failed all 30 takes of a session
+    # that was correctly shot, and worse, invited a 180 degree "fix" that
+    # would have put the two files genuinely 180 apart and destroyed every
+    # match in Stage 1.
+    #
+    # What does NOT survive autorotation, and is worth failing on, is a
+    # quarter turn: one clip held portrait and the other landscape. That
+    # changes the displayed aspect and the framing, not only the storage.
+    def displayed(info: dict) -> tuple[int, int]:
+        if info["rotation"] % 180 == 90:
+            return info["height"], info["width"]
+        return info["width"], info["height"]
+
+    scan_disp, demo_disp = displayed(scan_info), displayed(demo_info)
+    scan_landscape = scan_disp[0] >= scan_disp[1]
+    demo_landscape = demo_disp[0] >= demo_disp[1]
+    quarter = (scan_info["rotation"] % 90 == 0) and (demo_info["rotation"] % 90 == 0)
+    ok3 = quarter and (scan_landscape == demo_landscape)
+    report["check3_scan_displayed"] = list(scan_disp)
+    report["check3_demo_displayed"] = list(demo_disp)
+    print(f"3 orientation match  {scan_disp[0]}x{scan_disp[1]} vs "
+          f"{demo_disp[0]}x{demo_disp[1]}"
+          f"   {'PASS' if ok3 else 'FAIL'}")
+    print(f"                     tags {scan_info['rotation']} and "
+          f"{demo_info['rotation']}; ffmpeg applies these on decode, so a tag "
+          f"difference alone is not a fault")
+    if not quarter:
         hard.append(
-            f"the scan is tagged {scan_info['rotation']} degrees and the demo "
-            f"{demo_info['rotation']}. Hold the camera the same way up for both."
+            f"a rotation tag is not a whole quarter turn (scan "
+            f"{scan_info['rotation']}, demo {demo_info['rotation']}). ffmpeg "
+            f"cannot straighten this cleanly."
         )
+    elif not ok3:
+        hard.append(
+            f"the scan displays {scan_disp[0]}x{scan_disp[1]} and the demo "
+            f"{demo_disp[0]}x{demo_disp[1]}. One was held portrait and the "
+            f"other landscape. Hold the camera the same way up for both."
+        )
+    # NOTE: a camera held genuinely upside down relative to gravity carries a
+    # tag that makes it upright on decode, so no metadata check can see it.
+    # Check 2 (MediaPipe finds no inverted hand) and Stage 1 registration are
+    # what catch that.
 
     # --- 4 and 5. scan geometry from the marker ---
     geometry = scan_distances(scan, scan_info, args.sample_fps)

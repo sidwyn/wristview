@@ -303,6 +303,45 @@ def write_pairs_file(pairs: list[tuple[str, str]], path: Path) -> Path:
     return path
 
 
+# COLMAP's parameter list per camera model. The prior string has to have
+# exactly this many values in this order or COLMAP reads the focal length out
+# of the wrong slot. Distortion terms start at zero and are refined.
+CAMERA_MODEL_PARAMS: dict[str, tuple[str, ...]] = {
+    "SIMPLE_PINHOLE": ("f", "cx", "cy"),
+    "PINHOLE": ("fx", "fy", "cx", "cy"),
+    "SIMPLE_RADIAL": ("f", "cx", "cy", "k1"),
+    "RADIAL": ("f", "cx", "cy", "k1", "k2"),
+    "OPENCV": ("fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2"),
+    "OPENCV_FISHEYE": ("fx", "fy", "cx", "cy", "k1", "k2", "k3", "k4"),
+    "FULL_OPENCV": (
+        "fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2", "k3", "k4", "k5", "k6",
+    ),
+    "FOV": ("fx", "fy", "cx", "cy", "omega"),
+    "SIMPLE_RADIAL_FISHEYE": ("f", "cx", "cy", "k"),
+    "RADIAL_FISHEYE": ("f", "cx", "cy", "k1", "k2"),
+    "THIN_PRISM_FISHEYE": (
+        "fx", "fy", "cx", "cy", "k1", "k2", "p1", "p2", "k3", "k4", "sx1", "sy1",
+    ),
+}
+
+
+def camera_params_prior(model: str, fx: float, fy: float, cx: float, cy: float) -> str:
+    """Build COLMAP's `camera_params` string for one camera model.
+
+    Every distortion term starts at zero. An unknown model raises rather than
+    producing a list of the wrong length, which COLMAP accepts silently and
+    then misreads.
+    """
+    names = CAMERA_MODEL_PARAMS.get(model.upper())
+    if names is None:
+        raise ValueError(
+            f"unknown COLMAP camera model {model!r}. "
+            f"Known models: {', '.join(sorted(CAMERA_MODEL_PARAMS))}"
+        )
+    known = {"f": fx, "fx": fx, "fy": fy, "cx": cx, "cy": cy}
+    return ",".join(str(float(known.get(name, 0.0))) for name in names)
+
+
 def run_reconstruction(
     sfm_dir: Path,
     image_dir: Path,
@@ -326,12 +365,16 @@ def run_reconstruction(
     image_options: dict = {}
     if intrinsics is not None:
         if intrinsics.get("self_calibrate"):
+            model = str(intrinsics.get("colmap_camera_model") or "SIMPLE_RADIAL")
             image_options = {
-                "camera_model": intrinsics.get("colmap_camera_model", "SIMPLE_RADIAL"),
-                # A single focal prior, no distortion prior. COLMAP refines it.
-                "camera_params": ",".join(
-                    str(float(v))
-                    for v in (intrinsics["fx"], intrinsics["cx"], intrinsics["cy"], 0.0)
+                "camera_model": model,
+                # A focal prior, no distortion prior. COLMAP refines both.
+                "camera_params": camera_params_prior(
+                    model,
+                    float(intrinsics["fx"]),
+                    float(intrinsics["fy"]),
+                    float(intrinsics["cx"]),
+                    float(intrinsics["cy"]),
                 ),
             }
         else:

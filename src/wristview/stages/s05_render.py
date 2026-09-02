@@ -78,13 +78,29 @@ def _render_episode(
         widths = trajectory["width_m"]
         closed = trajectory["closed"]
         timestamps = trajectory["timestamps_s"]
-        # The control-rate poses are resampled from the video rate, so validity
-        # has to be resampled the same way.
-        video_valid = trajectory["hand_valid"].astype(bool)
-        renderable = video_valid[
-            np.clip(np.round(timestamps * source_fps_value).astype(int),
-                    0, len(video_valid) - 1)
-        ]
+        # Control-rate validity is computed where the resampling happens, in
+        # Stage 4, and read here. It used to be re-derived by rounding each
+        # control timestamp to the nearest video frame, which is a second
+        # implementation of one thing: Stage 4 marks a control sample valid
+        # only when the source frames on BOTH sides were measured, and rounding
+        # to the nearest accepts a sample whose other neighbour was not. The
+        # exporter reads the same array, so the two agree by construction and
+        # the external splat layer's frame count matches this episode's.
+        if "hand_valid_control" in trajectory:
+            renderable = trajectory["hand_valid_control"].astype(bool)
+        else:
+            log.warning(
+                "%s: 04_retarget has no hand_valid_control, so this run "
+                "predates the control-rate validity fix. Falling back to "
+                "rounding, which can disagree with the exporter by a few "
+                "frames. Re-run Stage 4 to remove the guess.",
+                clip_id,
+            )
+            video_valid = trajectory["hand_valid"].astype(bool)
+            renderable = video_valid[
+                np.clip(np.round(timestamps * source_fps_value).astype(int),
+                        0, len(video_valid) - 1)
+            ]
 
     # Render measured frames only.
     #
@@ -106,6 +122,12 @@ def _render_episode(
             "are excluded, not drawn.",
             clip_id, int(renderable.sum()), len(renderable), excluded,
         )
+    # Keep the unfiltered arrays: an external splat layer may name a smaller
+    # set of frames still, and re-slicing an already-sliced array with a mask
+    # built against the original is how off-by-N bugs get in.
+    full_poses, full_widths = ee_poses, widths
+    full_closed, full_times = closed, timestamps
+
     render_index = np.nonzero(renderable)[0]
     ee_poses = ee_poses[renderable]
     widths = widths[renderable]
@@ -158,6 +180,17 @@ def _render_episode(
     # the splat layer moves.
     layer_dir = cfg.get("splat_layer_dir")
     external = Path(layer_dir) if layer_dir else None
+    # One layer directory per clip. If the configured path holds a
+    # subdirectory named for this clip, use that.
+    #
+    # Without this the same directory is composited into every episode. On
+    # real28 a single `splat_layer_dir` was passed for all 30 clips and only
+    # demo_0 was valid; the other 29 were that clip's scene composited under a
+    # different clip's gripper and object, which looks plausible frame by
+    # frame and is wrong in every one. A per-clip path cannot be expressed by
+    # the config alone, because Stage 5 loops over clips internally.
+    if external is not None and (external / clip_id).is_dir():
+        external = external / clip_id
     external_meta = None
     if external is not None:
         external_meta = read_json(external / "render.json")
@@ -168,7 +201,29 @@ def _render_episode(
                 f"render is {width}x{height}. They must match, or the depth "
                 f"test compares different pixels."
             )
-        if int(external_meta["frames"]) != len(ee_poses):
+        layer_index = external_meta.get("source_index")
+        if layer_index is not None:
+            # The layer names the control frames it holds, so render exactly
+            # those. Re-deriving the selection here produced a two-frame
+            # disagreement on demo_5, because the exporter also drops cameras
+            # below the desk and this stage does not know that rule.
+            layer_index = np.asarray(layer_index, dtype=int)
+            keep_layer = np.zeros(len(full_poses), dtype=bool)
+            keep_layer[layer_index[layer_index < len(full_poses)]] = True
+            dropped_here = int((renderable & ~keep_layer).sum())
+            if dropped_here:
+                log.info(
+                    "%s: the splat layer holds %d of the %d frames this stage "
+                    "would render; following the layer.",
+                    clip_id, int(keep_layer.sum()), int(renderable.sum()),
+                )
+            renderable = renderable & keep_layer
+            render_index = np.nonzero(renderable)[0]
+            ee_poses = full_poses[renderable]
+            widths = full_widths[renderable]
+            closed = full_closed[renderable]
+            timestamps = full_times[renderable]
+        elif int(external_meta["frames"]) != len(ee_poses):
             raise ValueError(
                 f"the external splat layer holds {external_meta['frames']} "
                 f"frames and this episode has {len(ee_poses)}."

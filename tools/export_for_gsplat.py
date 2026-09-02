@@ -80,8 +80,19 @@ def main() -> int:
     config = (run_root / "config.yaml").read_text()
     (out / "config.yaml").write_text(config)
 
+    # Ship the wrist camera, so the GPU renderer draws the SAME camera the
+    # local pipeline does. It used to hardcode 640x480 at 90 degrees with no
+    # pitch, which is the mount as it stood before the real27 correction, and
+    # nothing linked the two files. That correction narrowed the lens to 62.1
+    # degrees and pitched the mount 12.02 degrees down, and moved measured
+    # alpha from 0.635 to 0.939. json, not yaml, so the pod needs no extra
+    # dependency.
+    import yaml as _yaml
+    wrist_camera = (_yaml.safe_load(config).get("render") or {}).get("wrist_camera") or {}
+
     meta = {
         "run": run_root.name,
+        "wrist_camera": wrist_camera,
         "scan_frames": scan["frame_count"],
         "image_size": [scan["video_info"]["width"], scan["video_info"]["height"]],
         "metric_scale_m_per_unit": scale["scale_factor"],

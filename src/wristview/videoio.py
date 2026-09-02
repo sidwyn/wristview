@@ -7,6 +7,7 @@ OpenCV's capture path gets wrong often enough to matter.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ class VideoInfo:
     rotation_deg: int
     codec: str
     focal_35mm: float | None
+    focal_source: str = "none"
 
     def to_dict(self) -> dict:
         return {
@@ -63,7 +65,50 @@ class VideoInfo:
             "rotation_deg": self.rotation_deg,
             "codec": self.codec,
             "focal_35mm": self.focal_35mm,
+            "focal_source": self.focal_source,
         }
+
+
+# Tags that carry a 35mm-equivalent focal length as a bare number.
+FOCAL_NUMERIC_TAGS = (
+    "focal_length_in_35mm_film",
+    "com.apple.quicktime.lens",
+    "focal_length",
+)
+
+# Tags that name the lens in prose, with the 35mm equivalent on the end:
+# "iPhone 16 Pro 24mm". Blackmagic Camera writes both of these and none of the
+# numeric tags, which is why an iPhone clip can look like it has no EXIF at all.
+FOCAL_LABEL_TAGS = (
+    "com.blackmagic-design.camera.lensType",
+    "com.apple.quicktime.model",
+)
+
+_LENS_MM = re.compile(r"(\d+(?:\.\d+)?)\s*mm\b", re.IGNORECASE)
+
+
+def focal_35mm_from_tags(tags: dict) -> tuple[float | None, str]:
+    """Read a 35mm-equivalent focal length out of the container tags.
+
+    Returns the focal length and where it came from. A numeric tag is a
+    measurement, so it is trusted. A lens label is the lens's nominal focal
+    length, which video does not deliver because it crops the sensor: real27's
+    24mm-labelled clip refined to the equivalent of 27mm. Label reads carry
+    their own source so Stage 1 keeps refining them instead of freezing them.
+    """
+    for key in FOCAL_NUMERIC_TAGS:
+        if key in tags:
+            try:
+                return float(str(tags[key]).split()[0]), "exif_focal35"
+            except (ValueError, IndexError):
+                continue
+
+    for key in FOCAL_LABEL_TAGS:
+        match = _LENS_MM.search(str(tags.get(key, "")))
+        if match:
+            return float(match.group(1)), "exif_lens_label"
+
+    return None, "none"
 
 
 def probe(path: str | Path) -> VideoInfo:
@@ -118,15 +163,8 @@ def probe(path: str | Path) -> VideoInfo:
     rotation = rotation % 360
 
     # ffprobe surfaces EXIF only sometimes. Absent is normal and handled.
-    focal_35mm = None
     tags = {**payload.get("format", {}).get("tags", {}), **stream.get("tags", {})}
-    for key in ("focal_length_in_35mm_film", "com.apple.quicktime.lens", "focal_length"):
-        if key in tags:
-            try:
-                focal_35mm = float(str(tags[key]).split()[0])
-                break
-            except (ValueError, IndexError):
-                continue
+    focal_35mm, focal_source = focal_35mm_from_tags(tags)
 
     # A 90 or 270 degree rotation swaps the stored dimensions.
     if rotation in (90, 270):
@@ -142,6 +180,7 @@ def probe(path: str | Path) -> VideoInfo:
         rotation_deg=rotation,
         codec=str(stream.get("codec_name", "unknown")),
         focal_35mm=focal_35mm,
+        focal_source=focal_source,
     )
 
 
@@ -185,6 +224,75 @@ def laplacian_variance(image: np.ndarray) -> float:
     """Blur measure. Higher is sharper. The standard variance-of-Laplacian."""
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def best_tile_normalised_variance(image: np.ndarray, tiles: int = 3) -> float:
+    """Sharpness of the sharpest `tiles` x `tiles` region, on the FRAME's contrast.
+
+    `normalised_laplacian_variance` averages over the whole frame, which is the
+    right measure when the frame is uniformly in focus and the wrong one when
+    it is not. Close to a surface the depth of field is a centimetre or two, so
+    a band of the frame is properly sharp and the rest falls away.
+
+    **Why the divisor is the whole frame and not the tile.** Normalising each
+    tile by its OWN standard deviation rewards flat tiles: a patch of shadow
+    has almost no contrast, so dividing by it amplifies quantisation noise into
+    a high score. Measured on real31's scan_full, a per-tile divisor made the
+    winning tile the LOW-contrast one on 72.5 per cent of frames, median
+    winning contrast 5.18 grey levels against 20.14 across all tiles, with
+    contrast and score correlating -0.318. The measure was ranking shadow above
+    detail, and it reported that pass as sharper than real26/d's low pass.
+
+    Dividing every tile by the frame's contrast keeps the exposure invariance
+    the floor needs, since a darker take of the same scene scales both, while
+    leaving a flat tile scoring near zero where it belongs.
+
+    `tiles=1` reduces to `normalised_laplacian_variance` exactly.
+    """
+    if tiles < 1:
+        raise ValueError(f"tiles must be at least 1, got {tiles}")
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    gray = gray.astype(np.float64)
+    spread = gray.std()
+    if spread < 1e-6:
+        return 0.0
+    scaled = (gray - gray.mean()) / spread
+    if tiles == 1:
+        return float(cv2.Laplacian(scaled, cv2.CV_64F).var())
+    height, width = scaled.shape[:2]
+    step_y, step_x = height // tiles, width // tiles
+    if step_y < 8 or step_x < 8:
+        return float(cv2.Laplacian(scaled, cv2.CV_64F).var())
+    best = 0.0
+    for row in range(tiles):
+        for column in range(tiles):
+            patch = scaled[row * step_y:(row + 1) * step_y,
+                           column * step_x:(column + 1) * step_x]
+            best = max(best, float(cv2.Laplacian(patch, cv2.CV_64F).var()))
+    return best
+
+
+def normalised_laplacian_variance(image: np.ndarray) -> float:
+    """Blur measure with exposure and contrast divided out.
+
+    `laplacian_variance` scales with image contrast, so a darker or flatter
+    exposure of the SAME scene at the SAME focus scores lower. That makes it
+    unusable as an absolute floor across passes shot at different exposures.
+    real27's two low passes measured 7.1 and 18.7 raw, a factor of 2.6, while
+    the second is 5.5x sharper once contrast is removed: it was simply darker,
+    mean grey 60.1 against 120.8.
+
+    Standardising each frame to zero mean and unit standard deviation first
+    gives a number comparable across exposures. Measured on real26/d's
+    registered views below 15 cm, the only low pass known to have produced a
+    usable reconstruction, the median is 0.0323.
+    """
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    gray = gray.astype(np.float64)
+    spread = gray.std()
+    if spread < 1e-6:
+        return 0.0
+    return float(cv2.Laplacian((gray - gray.mean()) / spread, cv2.CV_64F).var())
 
 
 def phash(image: np.ndarray, hash_size: int = 8) -> np.uint64:

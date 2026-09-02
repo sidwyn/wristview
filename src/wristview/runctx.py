@@ -31,6 +31,7 @@ STAGE_DIRS = {
     3: "03_estimate",
     4: "04_retarget",
     5: "05_render",
+    6: "06_export",
 }
 
 

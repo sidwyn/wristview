@@ -520,9 +520,34 @@ def run(ctx: RunContext) -> dict:
                          marker_world[:3, 3].round(4).tolist())
                 rec.metric("marker_world_position", marker_world[:3, 3].round(5).tolist())
 
+        # Which demos to localize. null is every demo, which is the norm.
+        # Naming a subset exists for the smoke test: Stage 2 is the expensive
+        # stage, about 12 minutes a clip on this Mac, and proving the path on
+        # one clip before committing to fifty is worth a config key.
+        #
+        # A run that localizes a subset writes a summary describing ONLY that
+        # subset, so the skipped clips are recorded rather than silently
+        # absent.
+        only = cfg.get("clips")
+        if only:
+            only = [str(c) for c in only]
+            known = [k for k, v in manifest["clips"].items() if v["kind"] == "demo"]
+            missing = [c for c in only if c not in known]
+            if missing:
+                raise ValueError(
+                    f"localize.clips names {missing}, which Stage 0 did not ingest. "
+                    f"Known demos: {known}"
+                )
+            log.warning("localize.clips restricts this run to %d of %d demos: %s",
+                        len(only), len(known), ", ".join(only))
+
         statuses = {}
+        skipped = []
         for clip_id, clip in manifest["clips"].items():
             if clip["kind"] != "demo":
+                continue
+            if only and clip_id not in only:
+                skipped.append(clip_id)
                 continue
             log.info("--- Stage 2: %s (%d frames) ---", clip_id, clip["frame_count"])
             intrinsics = Intrinsics.from_dict(intrinsics_all[clip_id])
@@ -533,6 +558,10 @@ def run(ctx: RunContext) -> dict:
                 refined_intrinsics=refined_intrinsics,
             )
             rec.output(f"{clip_id}_poses", ctx.episode_dir(STAGE, clip_id) / "camera_poses.npy")
+
+        if skipped:
+            rec.metric("skipped_by_config", skipped)
+            rec.note(f"localize.clips skipped {len(skipped)} demos: {', '.join(skipped)}")
 
         summary_path = write_json(ctx.stage_dir(STAGE) / "summary.json", statuses)
         rec.output("summary", summary_path)

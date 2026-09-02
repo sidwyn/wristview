@@ -41,6 +41,11 @@ WHISTLE_BAND_HZ = (1000.0, 5000.0)
 # Audio is decoded at this rate. It only has to clear 2x the top of the band.
 SAMPLE_RATE_HZ = 16000
 
+# The floor used when self-calibrating. Low enough to catch the quietest
+# microphone seen (real whistles at z 336), high enough to keep the candidate
+# list short. The gap rule, not this number, decides what is a whistle.
+DISCOVERY_Z = 100.0
+
 # Envelope resolution. 5 ms is far finer than the ~700 ms whistles being found
 # and keeps the edge of a whistle located to well inside one video frame.
 HOP_S = 0.005
@@ -156,12 +161,43 @@ def robust_z(envelope: np.ndarray) -> np.ndarray:
     return (envelope - median) / scale
 
 
+def split_on_largest_gap(peaks: np.ndarray, min_ratio: float = 3.0) -> float:
+    """Find the threshold that separates whistles from everything else.
+
+    An ABSOLUTE z threshold does not transfer. Across one session's twelve
+    recordings the real whistles scored 336 to 19,599 depending only on how
+    close the microphone sat: the ego mics ran rms 0.033 and the wrist mics
+    0.009, and a fixed 1000 found every whistle in ten files and none at all
+    in two, where the whistles were plainly there at z 336 to 580.
+
+    What DOES transfer is the gap. In every recording the whistles cluster far
+    above the spurious bursts, by a factor of 3 or more. So sort the candidate
+    peaks, find the largest multiplicative step, and cut there.
+
+    Returns the threshold, or 0.0 when no step is decisive enough to trust, in
+    which case the caller should keep everything and let duration do the work.
+    """
+    peaks = np.sort(np.asarray(peaks, dtype=np.float64))
+    if peaks.size < 2:
+        return 0.0
+    positive = peaks[peaks > 0]
+    if positive.size < 2:
+        return 0.0
+
+    ratios = positive[1:] / positive[:-1]
+    index = int(np.argmax(ratios))
+    if ratios[index] < min_ratio:
+        return 0.0
+    # Cut between the two, geometrically, so neither is on the boundary.
+    return float(np.sqrt(positive[index] * positive[index + 1]))
+
+
 def find_whistles(
     samples: np.ndarray,
     sample_rate: int = SAMPLE_RATE_HZ,
-    z_min: float = 20.0,
+    z_min: float | None = None,
     min_ms: float = 300.0,
-    max_ms: float = 1500.0,
+    max_ms: float = 2000.0,
     merge_gap_ms: float = 120.0,
     expect: int | None = None,
     band_hz: tuple[float, float] = WHISTLE_BAND_HZ,
@@ -171,11 +207,38 @@ def find_whistles(
     `expect` takes the N strongest candidates instead of trusting `z_min`.
     Absolute z depends on how quiet the room was, so it does not transfer
     between sessions; a known whistle count does.
+
+    WHY z_min IS 1000. Duration alone is not enough, though block 1 suggested
+    it was: there, every spurious burst was 15 to 115 ms and died on the
+    300 ms floor. Block 2 carried a 355 ms burst in the ego and a 645 ms burst
+    in the wrist, both clearing the floor, and each added a twelfth whistle to
+    an eleven-whistle file. That splits one take in two and shifts every take
+    index after it.
+
+    The separation is in z, and it is enormous. Over both blocks: real
+    whistles 5,212 to 19,599, every spurious burst at or below 145. A
+    threshold of 1000 sits 5x under the weakest real whistle and 7x over the
+    loudest spurious one. It is still a per-room number; check the candidate
+    table that `split_takes` prints before trusting it on a new session.
     """
     envelope, hop_s = band_envelope(samples, sample_rate, band_hz)
     if envelope.size == 0:
         return []
     scores = robust_z(envelope)
+
+    # `z_min` None means self-calibrate. Collect everything above a floor low
+    # enough to catch the quietest microphone, keep what survives on duration,
+    # then cut at the largest multiplicative gap among what is left.
+    if z_min is None:
+        found = _runs_to_whistles(
+            scores, hop_s, DISCOVERY_Z, min_ms, max_ms, merge_gap_ms
+        )
+        if len(found) < 2:
+            return _finalise(found, expect)
+        threshold = split_on_largest_gap(np.array([w.peak_z for w in found]))
+        if threshold > 0:
+            found = [w for w in found if w.peak_z >= threshold]
+        return _finalise(found, expect)
 
     above = scores >= z_min
     if not above.any():
@@ -210,11 +273,45 @@ def find_whistles(
                 peak_z=float(scores[start:stop].max()),
             )
         )
+    return _finalise(found, expect)
 
+
+def _finalise(found: list[Whistle], expect: int | None) -> list[Whistle]:
+    """Apply `expect`, keeping chronological order."""
     if expect is not None and len(found) > expect:
         strongest = sorted(found, key=lambda w: w.peak_z, reverse=True)[:expect]
         found = sorted(strongest, key=lambda w: w.start_s)
     return found
+
+
+def _runs_to_whistles(scores, hop_s, z_min, min_ms, max_ms, merge_gap_ms):
+    """Runs above `z_min` that survive the duration window."""
+    above = scores >= z_min
+    if not above.any():
+        return []
+    edges = np.diff(above.astype(np.int8))
+    starts = list(np.flatnonzero(edges == 1) + 1)
+    stops = list(np.flatnonzero(edges == -1) + 1)
+    if above[0]:
+        starts.insert(0, 0)
+    if above[-1]:
+        stops.append(len(above))
+
+    merge_gap = merge_gap_ms / 1000.0
+    runs: list[list[int]] = []
+    for start, stop in zip(starts, stops, strict=True):
+        if runs and (start - runs[-1][1]) * hop_s <= merge_gap:
+            runs[-1][1] = stop
+        else:
+            runs.append([start, stop])
+
+    out = []
+    for start, stop in runs:
+        duration_ms = (stop - start) * hop_s * 1000.0
+        if min_ms <= duration_ms <= max_ms:
+            out.append(Whistle(start * hop_s, stop * hop_s,
+                               float(scores[start:stop].max())))
+    return out
 
 
 def fit_clock(

@@ -41,19 +41,19 @@ def block(whistle_times_s: list[float], total_s: float, duration_s: float = 0.75
 class TestFindWhistles:
     def test_finds_every_whistle_at_the_right_time(self):
         truth = [1.0, 5.0, 9.0, 13.0]
-        found = find_whistles(block(truth, total_s=16.0))
+        found = find_whistles(block(truth, total_s=16.0), z_min=20.0)
         assert len(found) == len(truth)
         for whistle, start in zip(found, truth, strict=True):
             # Centre of a 750 ms burst starting at `start`.
             assert whistle.centre_s == pytest.approx(start + 0.375, abs=0.05)
 
     def test_duration_is_recovered(self):
-        found = find_whistles(block([2.0], total_s=6.0, duration_s=0.75))
+        found = find_whistles(block([2.0], total_s=6.0, duration_s=0.75), z_min=20.0)
         assert found[0].duration_s == pytest.approx(0.75, abs=0.08)
 
     def test_a_block_of_ten_takes_has_eleven_whistles(self):
         truth = [1.0 + 6.0 * i for i in range(11)]
-        found = find_whistles(block(truth, total_s=72.0))
+        found = find_whistles(block(truth, total_s=72.0), z_min=20.0)
         assert len(found) == 11
 
     def test_broadband_impact_is_not_a_whistle(self):
@@ -62,7 +62,7 @@ class TestFindWhistles:
         signal = rng.normal(0.0, 0.002, int(10.0 * SR))
         at = int(4.0 * SR)
         signal[at:at + int(0.02 * SR)] += rng.normal(0.0, 0.9, int(0.02 * SR))
-        assert find_whistles(signal) == []
+        assert find_whistles(signal, z_min=20.0) == []
 
     def test_low_frequency_energy_is_not_a_whistle(self):
         """Speech-band rumble is sustained but sits below the band."""
@@ -71,13 +71,13 @@ class TestFindWhistles:
         at = int(3.0 * SR)
         burst = tone(1.0, hz=200.0, amplitude=0.8)
         signal[at:at + len(burst)] += burst
-        assert find_whistles(signal) == []
+        assert find_whistles(signal, z_min=20.0) == []
 
     def test_too_short_a_tone_is_rejected(self):
-        assert find_whistles(block([2.0], total_s=6.0, duration_s=0.05)) == []
+        assert find_whistles(block([2.0], total_s=6.0, duration_s=0.05), z_min=20.0) == []
 
     def test_too_long_a_tone_is_rejected(self):
-        assert find_whistles(block([1.0], total_s=10.0, duration_s=4.0)) == []
+        assert find_whistles(block([1.0], total_s=10.0, duration_s=4.0), z_min=20.0) == []
 
     def test_expect_keeps_the_strongest_when_the_threshold_is_loose(self):
         """Absolute z does not transfer between rooms; a known count does."""
@@ -121,8 +121,11 @@ class TestEnvelope:
 
     def test_a_quiet_room_still_detects(self):
         """The quieter the room, the higher the score should be, not the lower."""
-        loud = find_whistles(block([2.0], total_s=8.0, noise=0.02, seed=7))
-        quiet = find_whistles(block([2.0], total_s=8.0, noise=0.0002, seed=7))
+        # Explicit z_min: the shipped default of 1000 is calibrated for real
+        # room audio, where whistles score in the thousands. These synthetic
+        # fixtures are far quieter relative to their noise.
+        loud = find_whistles(block([2.0], total_s=8.0, noise=0.02, seed=7), z_min=20.0)
+        quiet = find_whistles(block([2.0], total_s=8.0, noise=0.0002, seed=7), z_min=20.0)
         assert len(loud) == len(quiet) == 1
         assert quiet[0].peak_z > loud[0].peak_z
 
@@ -178,3 +181,57 @@ class TestCoarseOffset:
     def test_zero_shift_reads_zero(self):
         ego = block([2.0, 8.0], total_s=12.0, seed=6)
         assert coarse_offset(ego, ego) == pytest.approx(0.0, abs=0.02)
+
+
+class TestSelfCalibration:
+    """An absolute z threshold does not transfer between microphones.
+
+    Across one session's twelve recordings the real whistles scored 336 to
+    19,599, a 58x range, driven only by how close the mic sat: ego rms 0.033
+    against wrist rms 0.009. A fixed threshold of 1000 found all 11 whistles
+    in ten recordings and ZERO in two, where they were plainly present at
+    z 336 to 580. What transfers is the gap, not the level.
+    """
+
+    def test_gap_rule_finds_the_step(self):
+        from wristview.audio import split_on_largest_gap
+        # Real whistles clustered high, spurious bursts low.
+        peaks = np.array([30.0, 60.0, 145.0, 5212.0, 8000.0, 19599.0])
+        threshold = split_on_largest_gap(peaks)
+        assert 145.0 < threshold < 5212.0
+
+    def test_gap_rule_works_on_a_quiet_microphone(self):
+        """The same shape, three orders of magnitude down."""
+        from wristview.audio import split_on_largest_gap
+        peaks = np.array([12.0, 20.0, 336.0, 450.0, 580.0])
+        threshold = split_on_largest_gap(peaks)
+        assert 20.0 < threshold < 336.0
+
+    def test_no_decisive_gap_returns_zero(self):
+        """Evenly spread peaks have no step, so nothing is cut."""
+        from wristview.audio import split_on_largest_gap
+        assert split_on_largest_gap(np.array([100.0, 130.0, 170.0, 200.0])) == 0.0
+
+    def test_too_few_peaks_to_judge(self):
+        from wristview.audio import split_on_largest_gap
+        assert split_on_largest_gap(np.array([500.0])) == 0.0
+
+    def test_self_calibration_finds_a_quiet_block(self):
+        """A whistle 30x quieter than another block's must still be found."""
+        loud = block([2.0, 8.0, 14.0], total_s=20.0, noise=0.002, seed=11)
+        quiet = block([2.0, 8.0, 14.0], total_s=20.0, noise=0.002, seed=11) * 0.03
+        assert len(find_whistles(loud)) == 3
+        assert len(find_whistles(quiet)) == 3
+
+    def test_self_calibration_still_rejects_short_bursts(self):
+        """Loosening the level must not loosen the duration rule."""
+        rng = np.random.default_rng(12)
+        signal = rng.normal(0.0, 0.002, int(20.0 * SR))
+        for start in (2.0, 8.0, 14.0):
+            burst = tone(0.75)
+            at = int(start * SR)
+            signal[at:at + len(burst)] += burst
+        # A loud but very short click, the shape that defeated a level rule.
+        at = int(17.0 * SR)
+        signal[at:at + int(0.02 * SR)] += rng.normal(0.0, 0.9, int(0.02 * SR))
+        assert len(find_whistles(signal)) == 3

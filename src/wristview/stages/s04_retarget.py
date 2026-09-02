@@ -246,18 +246,32 @@ def resample(
     closed: np.ndarray,
     source_fps: float,
     target_hz: float,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    measured: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Resample the trajectory to a fixed control rate.
 
     Rotations slerp, translations and widths interpolate linearly, and the
     binary grasp flag takes the nearest sample so it never lands between
     states.
+
+    `measured` says which source frames carry a real hand observation. The
+    returned validity marks a control sample valid only when the source frames
+    on BOTH sides of it were measured, so an interpolation between two
+    observations is kept and an extension past the last one is not.
+
+    It exists because the exporter had no control-rate validity to read and
+    invented one: `valid = np.ones(len(poses))`. That shipped 1,901 of 4,673
+    real27 cameras built on held poses, marked valid, and 290 of them were
+    below the desk.
     """
     from scipy.spatial.transform import Rotation, Slerp
 
     count = len(poses)
+    if measured is None:
+        measured = np.ones(count, dtype=bool)
+    measured = np.asarray(measured, dtype=bool)
     if count < 2:
-        return poses, widths, closed, np.zeros(count)
+        return poses, widths, closed, np.zeros(count), measured.copy()
 
     duration = (count - 1) / source_fps
     target_count = max(2, int(np.floor(duration * target_hz)) + 1)
@@ -276,7 +290,13 @@ def resample(
     out_widths = np.interp(target_times, source_times, widths)
     nearest = np.clip(np.round(target_times * source_fps).astype(int), 0, count - 1)
     out_closed = closed[nearest]
-    return out, out_widths, out_closed, target_times
+
+    # Linear interpolation of a 0/1 indicator reaches 1.0 only when both
+    # bracketing samples are measured, so this is exactly "supported on both
+    # sides". A control time landing on a measured sample keeps it.
+    support = np.interp(target_times, source_times, measured.astype(np.float64))
+    out_valid = support >= 1.0 - 1e-9
+    return out, out_widths, out_closed, target_times, out_valid
 
 
 def _retarget_episode(
@@ -641,9 +661,15 @@ def _retarget_episode(
 
     # ---- resample ---------------------------------------------------------
     target_hz = float(cfg.get("control_rate_hz", 15.0))
-    resampled_poses, resampled_widths, resampled_closed, times = resample(
-        poses, widths, closed, fps, target_hz
+    resampled_poses, resampled_widths, resampled_closed, times, resampled_valid = resample(
+        poses, widths, closed, fps, target_hz, measured=~pose_extrapolated & hand_valid
     )
+    if not resampled_valid.all():
+        log.info(
+            "%s: %d of %d control samples rest on an unmeasured pose and are "
+            "marked invalid; the exporter drops them",
+            clip_id, int((~resampled_valid).sum()), len(resampled_valid),
+        )
 
     # ---- reprojection gate, continued from Stage 3 ------------------------
     #
@@ -724,6 +750,7 @@ def _retarget_episode(
         hand_valid=hand_valid,
         hand_dropped=hand_dropped,
         pose_extrapolated=pose_extrapolated,
+        hand_valid_control=resampled_valid,
         # Per frame, what the trajectory rests on. `hand_measured` is observed,
         # `hand_filled` is interpolated across a frame the velocity gate
         # rejected, and neither means the hand was never detected.

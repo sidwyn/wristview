@@ -86,7 +86,7 @@ def main() -> int:
     ap.add_argument("--manifest", default=None,
                     help="split_takes manifest, to write a per-take entry as well")
     ap.add_argument("--expect-whistles", type=int, default=None)
-    ap.add_argument("--z-min", type=float, default=1000.0)
+    ap.add_argument("--z-min", type=float, default=None)
     ap.add_argument("--min-ms", type=float, default=300.0)
     ap.add_argument("--max-ms", type=float, default=2000.0)
     args = ap.parse_args()
