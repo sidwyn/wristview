@@ -35,6 +35,7 @@ from ..backends.splat_mps import render as splat_render
 from ..camera import Intrinsics
 from ..device import resolve as resolve_device
 from ..geometry import invert_pose, make_pose, orthonormalize, smooth_poses, transform_points
+from ..handqc import drop_isolated, drop_isolated_labels
 from ..logging_setup import get
 from ..objectbox import box_mesh, resolve_dimensions, sample_colour
 from ..runctx import RunContext, StageRecorder, read_json, verify_frames_present, write_json
@@ -256,6 +257,18 @@ def _estimate_episode(
                         "  %s: hand %d/%d frames, %d detected",
                         clip_id, index + 1, count, int(hand_valid.sum()),
                     )
+
+    # A detection no neighbouring frame supports is a false positive, and the
+    # detector's confidence cannot say so: WiLoR returns 1.000 on every frame it
+    # accepts. See handqc and defect 37.
+    hand_valid, isolated_report = drop_isolated(hand_valid)
+    if isolated_report["frames_dropped"]:
+        log.warning(
+            "%s: dropped %d isolated hand frame(s) %s, no neighbouring frame "
+            "supports them",
+            clip_id, isolated_report["frames_dropped"],
+            isolated_report["dropped_frames"],
+        )
 
     hand_rate = float(hand_valid.mean())
     log.info("%s: hand detected on %d/%d frames (%.0f%%) via %s",
@@ -665,6 +678,22 @@ def _estimate_episode(
         )
     sides = [str(hand_side[i]) for i in order]
     kept = [int(hands_seen[i]) for i in order]
+
+    # Remove labels no neighbour supports, BEFORE counting crossings. One
+    # mislabelled frame otherwise scores two crossings and invalidates a clip
+    # whose hand never changed. See `drop_isolated_labels`.
+    trusted, label_report = drop_isolated_labels(sides)
+    if label_report["labels_dropped"]:
+        log.info(
+            "%s: %d isolated hand label(s) dropped before the identity check, "
+            "at %s. Neither neighbour agreed with them, so they are detector "
+            "mislabels rather than the selector crossing hands.",
+            clip_id, label_report["labels_dropped"],
+            label_report["dropped_indices"][:10],
+        )
+    sides = [s for s, ok in zip(sides, trusted, strict=True) if ok]
+    kept = [k for k, ok in zip(kept, trusted, strict=True) if ok]
+
     switches = 0
     mislabels = 0
     for a, b, na, nb in zip(sides, sides[1:], kept, kept[1:], strict=False):
@@ -835,6 +864,7 @@ def _estimate_episode(
         "frames": count,
         "hand_backend": hand_kind,
         "hand_detection_rate": round(hand_rate, 4),
+        "isolated_hand_frames": isolated_report,
         "hand_select": hand_select,
         "hand_frames_ambiguous": ambiguous,
         "hand_frames_absent": absent,
