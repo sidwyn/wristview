@@ -60,10 +60,32 @@ class TestDropIsolatedLabels:
         _, report = drop_isolated_labels(sides)
         assert report["dropped_indices"] == [2, 5]
 
-    def test_ends_are_never_dropped(self):
-        """A first or last label has only one neighbour, so it is not isolated."""
-        sides = ["Left"] + ["Right"] * 5 + ["Left"]
-        _, report = drop_isolated_labels(sides)
+    def test_a_stray_label_at_either_end_is_dropped(self):
+        """The case that got past the first version and cost a real clip.
+
+        demo_13 read {'Right': 250, 'Left': 1} with the Left at position 250,
+        the final frame, and was declared INVALID for a hand that never
+        changed. One-sided evidence is weaker in principle and overwhelming
+        here: a real crossing is sustained, not one boundary frame.
+        """
+        _, report = drop_isolated_labels(["Right"] * 250 + ["Left"])
+        assert report["dropped_indices"] == [250]
+
+        _, report = drop_isolated_labels(["Left"] + ["Right"] * 250)
+        assert report["dropped_indices"] == [0]
+
+    def test_demo_13_scores_no_crossing_after_the_fix(self):
+        sides = ["Right"] * 250 + ["Left"]
+        seen = [2] * 251
+        assert count_switches(sides, seen) == 1
+        trusted, _ = drop_isolated_labels(sides)
+        cleaned = [s for s, ok in zip(sides, trusted, strict=True) if ok]
+        cleaned_seen = [n for n, ok in zip(seen, trusted, strict=True) if ok]
+        assert count_switches(cleaned, cleaned_seen) == 0
+
+    def test_a_sustained_run_at_the_end_is_not_dropped(self):
+        """Two frames support each other, so this stays a real crossing."""
+        _, report = drop_isolated_labels(["Right"] * 10 + ["Left", "Left"])
         assert report["labels_dropped"] == 0
 
     def test_alternating_labels_are_left_alone(self):

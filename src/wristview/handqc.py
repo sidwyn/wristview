@@ -71,13 +71,36 @@ def drop_isolated_labels(labels) -> tuple[np.ndarray, dict]:
         else:
             runs.append([label, index, index])
 
-    for position in range(1, len(runs) - 1):
-        label, start, stop = runs[position]
-        before, after = runs[position - 1], runs[position + 1]
-        singleton = start == stop
-        flanked = before[0] == after[0] != label
-        stable = (before[2] - before[1] + 1) >= 2 and (after[2] - after[1] + 1) >= 2
-        if singleton and flanked and stable:
+    def length(run):
+        return run[2] - run[1] + 1
+
+    for position, (label, start, stop) in enumerate(runs):
+        if start != stop:
+            continue  # not a singleton
+        before = runs[position - 1] if position > 0 else None
+        after = runs[position + 1] if position + 1 < len(runs) else None
+
+        if before is not None and after is not None:
+            # Interior: both sides must agree with each other and disagree
+            # with this frame, and both must be stable runs.
+            isolated = (before[0] == after[0] != label
+                        and length(before) >= 2 and length(after) >= 2)
+        else:
+            # FIRST OR LAST FRAME. An earlier version refused to judge these,
+            # on the reasoning that one neighbour is not enough evidence, and
+            # a test asserted it. That was wrong, and demo_13 is the proof:
+            # 251 labelled frames reading {'Right': 250, 'Left': 1} with the
+            # Left at position 250, the final frame. The clip was declared
+            # INVALID for a hand that never changed.
+            #
+            # One-sided evidence is weaker in principle and overwhelming in
+            # practice. The governing argument is unchanged: a real crossing
+            # is SUSTAINED. A single frame at a boundary, against a stable run
+            # of the other label, is the detector mislabelling one hand.
+            neighbour = before or after
+            isolated = neighbour[0] != label and length(neighbour) >= 2
+
+        if isolated:
             trusted[start] = False
 
     return trusted, {
