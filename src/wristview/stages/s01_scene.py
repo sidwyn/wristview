@@ -681,7 +681,7 @@ def run(ctx: RunContext) -> dict:
             if not gate.passed:
                 log.error("GATE FAILED %s: %s %s against a limit of %s. %s",
                           gate.name, gate.value, gate.unit, gate.threshold,
-                          gate.evidence)
+                          gate.detail)
                 rec.note(f"gate {gate.name} failed: {gate.value} {gate.unit} "
                          f"against {gate.threshold}")
 
