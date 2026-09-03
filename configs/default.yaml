@@ -238,6 +238,14 @@ scene:
     max_per_tile: 3072
 
 localize:
+  # Which demos to localize. null is every demo Stage 0 ingested.
+  #
+  # Stage 2 is the expensive stage, roughly 12 minutes a clip on the Mac, so
+  # naming one clip lets the whole path be proven before fifty takes are
+  # committed to it. A run that names a subset writes a summary covering only
+  # that subset and records the rest under `skipped_by_config`, so a partial
+  # run cannot be mistaken for a complete one.
+  clips: null
   # Below this fraction of registered frames, fall back to the ARKit trajectory.
   min_register_rate: 0.7
   # Reject the episode when more than this fraction of frames has no pose.
