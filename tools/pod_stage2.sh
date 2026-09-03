@@ -181,12 +181,54 @@ cmd_push() {
   "${SSH[@]}" "du -sh ${dest}"
 }
 
-cmd_stage2() {
+# Run one stage remotely and WAIT for it, reporting progress.
+#
+# Two defects this replaces, both found the hard way on a 60-clip run.
+#
+# 1. It was fire-and-forget: launch `nohup ... &`, print "launched", return.
+#    A caller that ran `stage2` then `pull` would pull an empty directory. It
+#    appeared to work only because of defect 2.
+# 2. The launching ssh did not exit. It held the session open for minutes
+#    after the remote job finished, with the pod billing at $0.74/hr. `ssh -n`
+#    closes stdin, which is what keeps the channel open.
+#
+# So: launch detached with stdin closed, then poll for the process to leave
+# the process table. Polling the PROCESS, not the log, because a stage that
+# dies silently stops writing and would otherwise look like it was thinking.
+remote_stage() {
+  local stage="$1"
   need_run
-  "${SSH[@]}" "cd ${REMOTE} && nohup /workspace/venv/bin/wristview stage 2 \
-      --run ${REMOTE}/data/${RUN_ID} > ${REMOTE}/stage2.log 2>&1 & echo launched"
-  echo "tail with: ssh ... 'tail -f ${REMOTE}/stage2.log'"
+  local log="${REMOTE}/stage${stage}.log"
+  "${SSH[@]}" -n "cd ${REMOTE} && rm -f ${log} && nohup /workspace/venv/bin/wristview stage ${stage} \
+      --run ${REMOTE}/data/${RUN_ID} > ${log} 2>&1 < /dev/null & echo launched stage ${stage}"
+
+  local waited=0
+  while true; do
+    sleep 30
+    waited=$((waited + 30))
+    local alive
+    alive=$("${SSH[@]}" -n "pgrep -f 'wristview stage ${stage}' >/dev/null && echo yes || echo no" 2>/dev/null)
+    local last
+    last=$("${SSH[@]}" -n "tail -1 ${log} 2>/dev/null | cut -c1-110" 2>/dev/null)
+    printf '  [%4ds] %s\n' "$waited" "${last:-no output yet}"
+    if [ "$alive" = "no" ]; then
+      echo "  remote stage ${stage} left the process table after ${waited}s"
+      break
+    fi
+  done
+
+  # A stage that vanished without writing its meta is a failure, not a pass.
+  if "${SSH[@]}" -n "grep -qE 'FAILED|Traceback' ${log}" 2>/dev/null; then
+    echo "REMOTE STAGE ${stage} FAILED:" >&2
+    "${SSH[@]}" -n "tail -30 ${log}" >&2
+    return 1
+  fi
+  return 0
 }
+
+cmd_stage2() { remote_stage 2; }
+cmd_stage4() { remote_stage 4; }
+cmd_stage5() { remote_stage 5; }
 
 # ---------------------------------------------------------------------------
 # pull. Poses only.
@@ -211,6 +253,8 @@ case "$VERB" in
   provision) cmd_provision ;;
   push) cmd_push ;;
   stage2) cmd_stage2 ;;
+  stage4) cmd_stage4 ;;
+  stage5) cmd_stage5 ;;
   pull) cmd_pull ;;
   all) cmd_linktest; cmd_provision; cmd_push; cmd_stage2 ;;
   *) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 2 ;;
