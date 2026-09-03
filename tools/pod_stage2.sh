@@ -70,6 +70,10 @@ RUN_ID=""
 # Cloudflare at the same moment, so the pod was the bottleneck, not the uplink.
 # At 0.31 MB/s a Stage 2 payload takes 75 minutes. Terminate and rent another.
 # ---------------------------------------------------------------------------
+# Below this a push costs more in pod time than re-renting. Measured: the
+# same 2.9 GB payload moved at 14 MB/s on a good pod and 3 MB/s on a poor one.
+MIN_LINK_MB_S="${MIN_LINK_MB_S:-4}"
+
 cmd_linktest() {
   echo "== pod =="
   "${SSH[@]}" "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader; \
@@ -82,8 +86,21 @@ cmd_linktest() {
   end=$(date +%s)
   rm -f /tmp/pod_linktest.bin
   secs=$(( end - start )); [ "$secs" -lt 1 ] && secs=1
-  echo "100 MB in ${secs}s = $(( 100 / secs )) MB/s"
-  echo "Under about 3 MB/s, terminate this pod and rent another."
+  local rate=$(( 100 / secs ))
+  echo "100 MB in ${secs}s = ${rate} MB/s"
+
+  # RETURN the verdict, do not merely print it. This printed "terminate this
+  # pod and rent another" and returned 0, so every caller sailed past it. That
+  # is the defect this codebase repeats: compute the number, then never read
+  # it. A slow pod is paid for at $0.74/hr while it crawls -- one 2.9 GB push
+  # at 3 MB/s costs about 16 minutes against 4 on a good link.
+  if [ "$rate" -lt "$MIN_LINK_MB_S" ]; then
+    echo "LINK TOO SLOW: ${rate} MB/s is under the ${MIN_LINK_MB_S} MB/s floor." >&2
+    echo "Terminate this pod and rent another; a push at this rate wastes more" >&2
+    echo "than a fresh pod costs." >&2
+    return 1
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------------------
