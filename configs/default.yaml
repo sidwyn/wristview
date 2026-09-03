@@ -271,6 +271,13 @@ localize:
   retrieval_top_k: 10
 
 estimate:
+  # Which demos to estimate. null is every demo Stage 2 accepted.
+  #
+  # Stage 3 is about 90 minutes for 60 clips, so re-running a couple of them
+  # after a code fix should cost minutes. A partial run merges into the
+  # existing summary rather than replacing it, so untouched clips keep their
+  # verdicts instead of vanishing.
+  clips: null
   # Stop the stage when a 3D quantity does not reproject onto the observation
   # that produced it. Set false to record the failure and continue.
   fail_on_reprojection: true
@@ -355,7 +362,10 @@ estimate:
     # The VERTICAL extent, in metres. The plane solve places the object's
     # centre at `offset + object_height_m / 2`, so this is the one number that
     # moves the object along the viewing ray if it is wrong.
-    object_height_m: 0.070
+    # sept02: Sidwyn's cube, measured 75 mm on each side. The 0.070 before
+    # this was real27's matcha carton, inherited rather than measured --
+    # the exact failure the comment above warns about.
+    object_height_m: 0.075
     # The rendered body as [x, y, z] in the object frame, in metres.
     #
     # z is the vertical one. `plane.object_pose_on_plane` builds the frame as
@@ -365,7 +375,7 @@ estimate:
     #
     # null falls back to a cube of object_height_m, which is right only for a
     # cube. real27's object is a matcha carton, 60 x 60 x 70 mm.
-    object_dimensions_m: [0.060, 0.060, 0.070]
+    object_dimensions_m: [0.075, 0.075, 0.075]
     # Per clip, because one set can hold several objects and different clips
     # manipulate different ones. Session 6 proved the need: with a single
     # prompt the detector locked onto the bin, which nobody ever moved.
@@ -426,7 +436,8 @@ retarget:
     method: contact
     # Half the object's largest dimension. Measured from the segmented object
     # cloud where one exists.
-    object_radius_m: 0.035
+    # Half the object's largest dimension: 75 mm cube -> 0.0375.
+    object_radius_m: 0.0375
     contact_margin_m: 0.03
     release_margin_m: 0.05
     # How still the object must sit in the hand frame to count as carried.
