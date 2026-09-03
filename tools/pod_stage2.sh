@@ -216,20 +216,36 @@ remote_stage() {
   local stage="$1"
   need_run
   local log="${REMOTE}/stage${stage}.log"
-  "${SSH[@]}" -n "cd ${REMOTE} && rm -f ${log} && nohup /workspace/venv/bin/wristview stage ${stage} \
-      --run ${REMOTE}/data/${RUN_ID} > ${log} 2>&1 < /dev/null & echo launched stage ${stage}"
+  local done="${REMOTE}/stage${stage}.done"
+
+  # A MARKER FILE, not pgrep. `pgrep -f "wristview stage 2"` run over ssh
+  # matches the ssh command string that ASKS the question:
+  #
+  #   891 bash -c pgrep -af 'wristview stage 2' | head -3
+  #
+  # so it answers "still running" forever. Measured on this run: the remote
+  # job finished at 12:37 and the wait loop would never have exited, billing
+  # $0.74/hr indefinitely. The marker cannot lie: the job wrote it or it did
+  # not. Same fix as `remote_job` in the e2e driver, which had the same bug.
+  "${SSH[@]}" -n "cd ${REMOTE} && rm -f ${log} ${done} && \
+      nohup sh -c '/workspace/venv/bin/wristview stage ${stage} \
+        --run ${REMOTE}/data/${RUN_ID} > ${log} 2>&1; echo \$? > ${REMOTE}/stage${stage}.rc; \
+        touch ${done}' > /dev/null 2>&1 < /dev/null & echo launched stage ${stage}"
 
   local waited=0
   while true; do
     sleep 30
     waited=$((waited + 30))
-    local alive
-    alive=$("${SSH[@]}" -n "pgrep -f 'wristview stage ${stage}' >/dev/null && echo yes || echo no" 2>/dev/null)
+    local finished
+    finished=$("${SSH[@]}" -n "test -f ${done} && echo done" 2>/dev/null)
     local last
     last=$("${SSH[@]}" -n "tail -1 ${log} 2>/dev/null | cut -c1-110" 2>/dev/null)
     printf '  [%4ds] %s\n' "$waited" "${last:-no output yet}"
-    if [ "$alive" = "no" ]; then
-      echo "  remote stage ${stage} left the process table after ${waited}s"
+    if [ "$finished" = "done" ]; then
+      local rc
+      rc=$("${SSH[@]}" -n "cat ${REMOTE}/stage${stage}.rc 2>/dev/null")
+      echo "  remote stage ${stage} finished rc=${rc:-?} after ${waited}s"
+      [ "${rc:-1}" = "0" ] || { echo "REMOTE STAGE ${stage} EXITED ${rc}" >&2; return 1; }
       break
     fi
   done
