@@ -456,26 +456,37 @@ def main() -> int:
     # normalisation is out of distribution on the first forward pass and lands
     # on the scratch number for a reason that has nothing to do with the
     # representation, so this is checked rather than assumed.
+    #
+    # EVERY camera, not just the first. This checked `cams[0]` only, which is
+    # always the ego view, so on B_prime and C the wrist channel went
+    # unverified and the check still printed PASSED. The wrist channels are
+    # the worst-corrupted ones in this dataset, 15.4x and 9.7x against ego's
+    # 14.1x, so they are exactly the ones an ego-only assertion must not be
+    # trusted for.
     norm_check = None
     if cams:
         probe = next(iter(test_loader))
         prepared_probe = preprocess(dict(probe))
-        img = prepared_probe[cams[0]].detach().float()
-        ch = img.reshape(-1, 3, *img.shape[-2:]).permute(1, 0, 2, 3).reshape(3, -1)
-        pm = ch.mean(dim=1).cpu().numpy()
-        ps = ch.std(dim=1).cpu().numpy()
-        norm_check = {"per_channel_mean": [round(float(v), 3) for v in pm],
-                      "per_channel_std": [round(float(v), 3) for v in ps]}
-        print(f"  normalised batch reaching the backbone: "
-              f"mean {norm_check['per_channel_mean']} "
-              f"std {norm_check['per_channel_std']}", flush=True)
+        norm_check = {}
+        pm_worst, ps_all = 0.0, []
+        for cam in cams:
+            img = prepared_probe[cam].detach().float()
+            ch = img.reshape(-1, 3, *img.shape[-2:]).permute(1, 0, 2, 3).reshape(3, -1)
+            cm = [round(float(v), 3) for v in ch.mean(dim=1).cpu().numpy()]
+            cs = [round(float(v), 3) for v in ch.std(dim=1).cpu().numpy()]
+            norm_check[cam] = {"per_channel_mean": cm, "per_channel_std": cs}
+            pm_worst = max(pm_worst, max(abs(v) for v in cm))
+            ps_all.extend(cs)
+            print(f"  normalised batch reaching the backbone, {cam}: "
+                  f"mean {cm} std {cs}", flush=True)
+        pm, ps = [pm_worst], ps_all
         # Under ImageNet statistics this must sit near zero mean, unit variance.
         # The bar is loose because one batch of one desk is not ImageNet, but it
         # is far tighter than the factor of 14 to 20 the broken dataset std gave.
         if not (max(abs(v) for v in pm) < 1.5 and 0.3 < min(ps) and max(ps) < 3.0):
             raise SystemExit(
-                f"preprocessing check FAILED: mean {norm_check['per_channel_mean']} "
-                f"std {norm_check['per_channel_std']}. The backbone is not "
+                f"preprocessing check FAILED across {len(cams)} camera(s): "
+                f"{norm_check}. The backbone is not "
                 f"receiving ImageNet-normalised input, so this probe would "
                 f"measure the normalisation, not the representation. Stopping "
                 f"rather than training."
