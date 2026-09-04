@@ -105,21 +105,27 @@ class WiLoRHands:
     inherits the error.
     """
 
+    # A frame the backend RAISED on is not a frame with no hand in it, and the
+    # two must never share a counter. On 4 September a torch downgrade made the
+    # MPS conv2d path raise on every frame; `process` swallowed it at DEBUG,
+    # Stage 3 reported "hand detected on 0/291 frames" as INFO, and the run
+    # carried on to Stage 4. `raised_on_every_frame` exists so the caller can
+    # tell a broken backend from an empty scene. See DEFECT-TABLE defect 43.
+    #
+    # These are CLASS attributes as well as instance ones, because the tests
+    # build an estimator with `__new__` to exercise the selector without a
+    # model, and `process` must not need `__init__` to have run.
+    frames_seen = 0
+    frames_raised = 0
+    last_error: str | None = None
+
     def __init__(self, device: str = "mps", dtype=None, select: str = "largest"):
         if select not in ("largest", "Left", "Right"):
             raise ValueError(f"select must be largest, Left or Right, got {select!r}")
         self.select = select
-
-        # A frame the backend RAISED on is not a frame with no hand in it, and
-        # the two must never share a counter. On 4 September a torch downgrade
-        # made the MPS conv2d path raise on every frame; `process` swallowed it
-        # at DEBUG, Stage 3 reported "hand detected on 0/291 frames" as INFO,
-        # and the run carried on to Stage 4. `raised_on_every_frame` exists so
-        # the caller can tell a broken backend from an empty scene. See
-        # DEFECT-TABLE defect 43.
         self.frames_seen = 0
         self.frames_raised = 0
-        self.last_error: str | None = None
+        self.last_error = None
 
         from . import mano_compat
 
