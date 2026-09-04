@@ -115,6 +115,35 @@ When you add a metric, make something read it and act on it.
   3 in, 0.15 m is not a marker this project owns. A tidy imperial value in a
   metric field is almost always inherited, not measured.
 
+## Files ending in " 2" are not ours
+
+There are about 4,700 of them in this repository, including inside `.venv`.
+`config 2.yaml`, `run_record 2.jsonl`, `00_ingest 2`, `04_retarget 2`,
+`06_export/lerobot 2`, `distutils-precedence 2.pth`, and 291 duplicated frames
+under `runs/sept02_scan2/00_ingest/demo_0/frames`.
+
+**The pipeline writes none of them.** A file sync does: this tree lives under
+`~/Documents` and `bird` is running. " 2" is what that duplication looks like.
+
+Three consequences, all of them things that have already cost time.
+
+1. **Do not diagnose a " 2" file as pipeline output.** `06_export/lerobot 2`
+   was read as wreckage from a failed export. It was a sync copy.
+2. **The stages read frame names from `00_ingest/manifest.json`, never from a
+   directory glob.** Keep it that way. It is the only reason a duplicated
+   frame directory has never changed what a stage ingested. Any new code that
+   globs a run directory inherits this hazard.
+3. **An editable install stops working on its own.** `pip install -e .` writes
+   `_editable_impl_wristview.pth`; the import works, and later fails with
+   `ModuleNotFoundError: No module named 'wristview'` while the file is still
+   there with correct contents. Re-run `pip install -e . --no-deps`. It has
+   happened in both venvs. Check this FIRST when a tool that ran an hour ago
+   suddenly cannot import the package.
+
+Duplicates checked so far are byte-identical to their originals, and
+`runs/sept02_final/00_ingest` has none, so no measurement is known to be
+affected.
+
 ## Marker ids
 
 - **id 0** — table marker, 100 mm. Scale AND workspace-segment detection key
