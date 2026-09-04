@@ -1,0 +1,15 @@
+/Users/sidwyn/Documents/Documents/Personal Projects/atlas/wristview/night-logs/palm_rotation.py:23: RuntimeWarning: invalid value encountered in divide
+  x = x / np.linalg.norm(x, axis=1, keepdims=True)
+--- palm rotation from landmarks_world ---
+scan2 REFERENCE        landmarks_world   n= 236  median   1.12 deg  mean   1.65  max   22.90  >90deg   0  valid 237/291
+broken evidence        landmarks_world   n= 236  median   7.56 deg  mean  34.81  max  179.99  >90deg  35  valid 237/291
+scratch NEW            landmarks_world   n= 236  median   1.12 deg  mean   1.65  max   22.88  >90deg   0  valid 237/291
+
+--- palm rotation from landmarks_cam ---
+scan2 REFERENCE        landmarks_cam     n= 236  median   1.10 deg  mean   1.63  max   22.84  >90deg   0  valid 237/291
+broken evidence        landmarks_cam     n= 236  median   7.64 deg  mean  34.81  max  179.87  >90deg  35  valid 237/291
+scratch NEW            landmarks_cam     n= 236  median   1.10 deg  mean   1.63  max   22.84  >90deg   0  valid 237/291
+
+--- landmarks_px against scan2 ---
+broken evidence        maxdiff 2093.25947644  per-landmark px: median 578.2712 max 2144.8524  valid-agree 291/291
+scratch NEW            maxdiff 0.00000000  per-landmark px: median 0.0000 max 0.0000  valid-agree 291/291

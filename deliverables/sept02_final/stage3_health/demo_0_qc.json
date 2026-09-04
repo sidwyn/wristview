@@ -1,0 +1,43 @@
+{
+  "clip_id": "demo_0",
+  "reprojection": [
+    {
+      "check": "hand_position_vs_detected_wrist",
+      "evidence": "independent",
+      "frames": 237,
+      "median_px": 6.97,
+      "p90_px": 9.36,
+      "max_px": 13.81,
+      "limit_px": 25.0,
+      "passed": true,
+      "note": "",
+      "all_joints_median_px": 90.84,
+      "all_joints_weak_perspective_median_px": 3.76,
+      "why_the_root": "WiLoR fits the hand under weak perspective at about 12 m; at our 0.48 m the joints' own depths matter and its approximation shows. The root is the hand's position, which is what the pipeline uses."
+    },
+    {
+      "check": "object_centre_vs_mask_centroid",
+      "evidence": "by construction",
+      "frames": 291,
+      "median_px": 0.32,
+      "p90_px": 1.42,
+      "max_px": 5.22,
+      "limit_px": 40.0,
+      "passed": true,
+      "note": "derived from the observation it is compared against; only a large value is informative, a small one is arithmetic",
+      "carried_frames": {
+        "check": "object_centre_vs_mask_centroid_while_carried",
+        "evidence": "independent",
+        "frames": 213,
+        "median_px": 0.39,
+        "p90_px": 1.51,
+        "max_px": 5.22,
+        "limit_px": 40.0,
+        "passed": true,
+        "note": ""
+      }
+    }
+  ],
+  "passed": true,
+  "failures": []
+}
