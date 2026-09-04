@@ -1,0 +1,151 @@
+{
+ "arm": "A_prime",
+ "seed": 1,
+ "steps": 2000,
+ "freeze_encoder": false,
+ "down_dims": [
+  512,
+  1024,
+  2048
+ ],
+ "trainable_params_m": 263.013671,
+ "frozen_params_m": 0.0,
+ "batch_size": 32,
+ "holdout": [
+  3,
+  8,
+  13,
+  18,
+  23,
+  28,
+  33,
+  38,
+  43,
+  48
+ ],
+ "cameras": [
+  "observation.images.ego"
+ ],
+ "train_rows": 7552,
+ "test_rows": 1860,
+ "action_error_mm_mean": 6.37978982925415,
+ "action_error_mm_median": 4.81575870513916,
+ "action_error_mm_p90": 12.073640823364258,
+ "final_train_loss": 0.03902894572168589,
+ "val_curve": [
+  {
+   "step": 250,
+   "val_mm_mean": 8.139800071716309,
+   "val_mm_median": 6.634944915771484,
+   "train_loss": 0.3023297064527869
+  },
+  {
+   "step": 500,
+   "val_mm_mean": 9.280542373657227,
+   "val_mm_median": 7.22001838684082,
+   "train_loss": 0.055960002534091474
+  },
+  {
+   "step": 750,
+   "val_mm_mean": 7.043598651885986,
+   "val_mm_median": 5.240487098693848,
+   "train_loss": 0.04795300092548132
+  },
+  {
+   "step": 1000,
+   "val_mm_mean": 6.954707622528076,
+   "val_mm_median": 5.218752861022949,
+   "train_loss": 0.04393721242249012
+  },
+  {
+   "step": 1250,
+   "val_mm_mean": 6.472687721252441,
+   "val_mm_median": 4.831119537353516,
+   "train_loss": 0.042386384461075066
+  },
+  {
+   "step": 1500,
+   "val_mm_mean": 7.456549644470215,
+   "val_mm_median": 5.243067264556885,
+   "train_loss": 0.04103789752349257
+  },
+  {
+   "step": 1750,
+   "val_mm_mean": 6.389090538024902,
+   "val_mm_median": 4.714906692504883,
+   "train_loss": 0.03909020830690861
+  },
+  {
+   "step": 2000,
+   "val_mm_mean": 6.323429107666016,
+   "val_mm_median": 4.8023295402526855,
+   "train_loss": 0.03902894572168589
+  }
+ ],
+ "still_falling_at_end": false,
+ "last4_val_mm": [
+  6.472687721252441,
+  7.456549644470215,
+  6.389090538024902,
+  6.323429107666016
+ ],
+ "train_minutes": 20.599634563922884,
+ "peak_vram_gb": 11.031473152,
+ "device": "cuda",
+ "lerobot_version": "0.4.4",
+ "torch_version": "2.10.0+cu128",
+ "scored_action_deltas": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7
+ ],
+ "backbone_weights": "imagenet",
+ "use_group_norm": false,
+ "batchnorm_modules_frozen": 20,
+ "r3m_load": null,
+ "image_stats_override": {
+  "dataset_std_replaced": {
+   "observation.images.ego": [
+    0.0171,
+    0.0127,
+    0.0111
+   ]
+  },
+  "imagenet_mean": [
+   0.485,
+   0.456,
+   0.406
+  ],
+  "imagenet_std": [
+   0.229,
+   0.224,
+   0.225
+  ]
+ },
+ "normalised_batch_check": {
+  "per_channel_mean": [
+   0.096,
+   0.257,
+   0.351
+  ],
+  "per_channel_std": [
+   1.056,
+   0.966,
+   0.839
+  ]
+ },
+ "pod_id": "btwdzn6ov4mbx2",
+ "hardware": {
+  "torch_version": "2.10.0+cu128",
+  "torchvision_version": "0.25.0+cu128",
+  "gpu_name": "NVIDIA GeForce RTX 4090",
+  "cuda_version": "12.8",
+  "cudnn_version": 91002,
+  "driver_version": "570.195.03"
+ }
+}
