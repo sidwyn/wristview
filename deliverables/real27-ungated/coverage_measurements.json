@@ -1,0 +1,205 @@
+[
+ {
+  "clip": "demo_9",
+  "frames": 81,
+  "predicted": 0.4336,
+  "alpha_mean": 0.6874290704727173,
+  "under_half": 0.35001302083333335
+ },
+ {
+  "clip": "demo_8",
+  "frames": 93,
+  "predicted": 0.5281,
+  "alpha_mean": 0.7612794041633606,
+  "under_half": 0.25323350694444446
+ },
+ {
+  "clip": "demo_3",
+  "frames": 92,
+  "predicted": 0.5112,
+  "alpha_mean": 0.7621634304523468,
+  "under_half": 0.26479383680555557
+ },
+ {
+  "clip": "demo_21",
+  "frames": 91,
+  "predicted": 0.6837,
+  "alpha_mean": 0.8276170492172241,
+  "under_half": 0.18674479166666666
+ },
+ {
+  "clip": "demo_14",
+  "frames": 81,
+  "predicted": 0.5973,
+  "alpha_mean": 0.8284671306610107,
+  "under_half": 0.18005208333333333
+ },
+ {
+  "clip": "demo_23",
+  "frames": 92,
+  "predicted": 0.5924,
+  "alpha_mean": 0.84042027592659,
+  "under_half": 0.17452256944444444
+ },
+ {
+  "clip": "demo_2",
+  "frames": 91,
+  "predicted": 0.6568,
+  "alpha_mean": 0.8585758209228516,
+  "under_half": 0.14565104166666668
+ },
+ {
+  "clip": "demo_19",
+  "frames": 109,
+  "predicted": 0.6457,
+  "alpha_mean": 0.8735271692276001,
+  "under_half": 0.1306640625
+ },
+ {
+  "clip": "demo_20",
+  "frames": 101,
+  "predicted": 0.6834,
+  "alpha_mean": 0.8917940258979797,
+  "under_half": 0.11427083333333334
+ },
+ {
+  "clip": "demo_7",
+  "frames": 87,
+  "predicted": 0.6715,
+  "alpha_mean": 0.8968067765235901,
+  "under_half": 0.10065538194444444
+ },
+ {
+  "clip": "demo_29",
+  "frames": 105,
+  "predicted": 0.6498,
+  "alpha_mean": 0.9015172123908997,
+  "under_half": 0.0963845486111111
+ },
+ {
+  "clip": "demo_17",
+  "frames": 91,
+  "predicted": 0.6914,
+  "alpha_mean": 0.910835862159729,
+  "under_half": 0.08419704861111112
+ },
+ {
+  "clip": "demo_16",
+  "frames": 79,
+  "predicted": 0.7271,
+  "alpha_mean": 0.9265020489692688,
+  "under_half": 0.07197916666666666
+ },
+ {
+  "clip": "demo_10",
+  "frames": 75,
+  "predicted": 0.7406,
+  "alpha_mean": 0.9377064108848572,
+  "under_half": 0.0631814236111111
+ },
+ {
+  "clip": "demo_18",
+  "frames": 89,
+  "predicted": 0.7479,
+  "alpha_mean": 0.938784122467041,
+  "under_half": 0.05227864583333333
+ },
+ {
+  "clip": "demo_6",
+  "frames": 85,
+  "predicted": 0.743,
+  "alpha_mean": 0.9395871758460999,
+  "under_half": 0.055503472222222225
+ },
+ {
+  "clip": "demo_27",
+  "frames": 117,
+  "predicted": 0.797,
+  "alpha_mean": 0.9411595463752747,
+  "under_half": 0.05299045138888889
+ },
+ {
+  "clip": "demo_22",
+  "frames": 90,
+  "predicted": 0.7868,
+  "alpha_mean": 0.956594318151474,
+  "under_half": 0.03813151041666667
+ },
+ {
+  "clip": "demo_4",
+  "frames": 58,
+  "predicted": 0.7824,
+  "alpha_mean": 0.9609915316104889,
+  "under_half": 0.030605468750000003
+ },
+ {
+  "clip": "demo_24",
+  "frames": 109,
+  "predicted": 0.8061,
+  "alpha_mean": 0.9619504809379578,
+  "under_half": 0.021158854166666668
+ },
+ {
+  "clip": "demo_25",
+  "frames": 93,
+  "predicted": 0.7631,
+  "alpha_mean": 0.9627479314804077,
+  "under_half": 0.02732204861111111
+ },
+ {
+  "clip": "demo_13",
+  "frames": 90,
+  "predicted": 0.7728,
+  "alpha_mean": 0.964873880147934,
+  "under_half": 0.024494357638888888
+ },
+ {
+  "clip": "demo_11",
+  "frames": 65,
+  "predicted": 0.8122,
+  "alpha_mean": 0.9802560806274414,
+  "under_half": 0.009205729166666666
+ },
+ {
+  "clip": "demo_1",
+  "frames": 95,
+  "predicted": 0.8214,
+  "alpha_mean": 0.9803898930549622,
+  "under_half": 0.007569444444444445
+ },
+ {
+  "clip": "demo_28",
+  "frames": 105,
+  "predicted": 0.8369,
+  "alpha_mean": 0.9806411266326904,
+  "under_half": 0.008585069444444444
+ },
+ {
+  "clip": "demo_12",
+  "frames": 114,
+  "predicted": 0.873,
+  "alpha_mean": 0.9821340143680573,
+  "under_half": 0.0037022569444444446
+ },
+ {
+  "clip": "demo_5",
+  "frames": 71,
+  "predicted": 0.8413,
+  "alpha_mean": 0.9853545427322388,
+  "under_half": 0.007421875
+ },
+ {
+  "clip": "demo_0",
+  "frames": 86,
+  "predicted": 0.8564,
+  "alpha_mean": 0.9860766530036926,
+  "under_half": 0.00166015625
+ },
+ {
+  "clip": "demo_26",
+  "frames": 110,
+  "predicted": 0.8551,
+  "alpha_mean": 0.9864115118980408,
+  "under_half": 0.007526041666666667
+ }
+]

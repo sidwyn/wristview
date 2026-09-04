@@ -324,6 +324,52 @@ now be identified: no released version between 0.3.3 and 0.4.4 has a
 queue, so the code path that produced the published figure cannot be
 reconstructed from the repository. Results now carry `lerobot_version`,
 `torch_version` and `scored_action_deltas`.
+| 49 | The pod run script asserted a result existed by globbing `${ARM}_seed1.json` | whether the run produced a result | whether the run produced THE result, under the name the training script actually writes | the script names results by backbone, so B_prime and C wrote `B_prime_r3m_finetuned_seed1.json` and both logged `VERDICT FAILED, NO RESULT FILE` while exiting 0 with complete 8-checkpoint curves. The Phase 1b agent reported this exact bug in its own report and the script was shipped again unfixed |
+| 50 | `GPU-LOG.md` is the file that answers whether anything is billing, and nothing reconciled its rows | that each pod event was written down | that every created pod was also closed | on 4 September it showed 3 CREATE rows against 5 DELETE rows. `zhr4zp6x1p44ax` was deleted at 13:26 and its row was never written, so for 2 h 20 min the log implied a running pod. Cowork escalated three times and Sidwyn received a phone notification about a pod that had been gone since 13:26. The pod was down; the LOG was wrong |
+
+## Rows 49 and 50, in detail
+
+Both are checks that reported the wrong answer about the project's own
+machinery rather than about the data, and both are the mirror image of the
+family this file opens with.
+
+**Row 49 inverts the usual failure.** Every other row here is a check that said
+PASSED when something was broken. This one said FAILED when everything was
+fine, twice, on the two runs that carry the experiment's central comparison. A
+check that cries failure on a healthy run trains the reader to discount it,
+which is how a real failure gets waved through later. It cost nothing this
+time only because the result files were inspected rather than trusted.
+
+**Row 50 is the more expensive one, because the log is a safety device.**
+`GPU-LOG.md` exists to answer one question: is anything billing right now. On
+4 September it could not answer it. The Phase 2a pod was deleted at 13:26,
+18 minutes from creation, $0.22, and the deletion row was never written. For
+two hours and twenty minutes the file implied a pod running at $0.74/hr, which
+would have been $1.71 by 15:28. Three exchanges and a phone notification to
+Sidwyn were spent establishing that a pod deleted two hours earlier was in fact
+deleted.
+
+The account was clean throughout. **The bookkeeping was not, and a safety
+device that cannot be trusted is worse than no safety device**, because it
+consumes attention at exactly the moment attention is scarce.
+
+`tools/check_gpu_log.py` now reconciles the file, and it took three passes to
+get right in a way worth recording:
+
+1. Reading the log as two sets, CREATE minus DELETE, reported four healthy
+   August pods as leaks. The log records `stop`/`start` cycles, so a pod
+   legitimately opens and closes several times and only its LAST action
+   describes its state.
+2. Counting every pod id in a row credited an event to a pod merely mentioned
+   in prose. "Phase 2 replacement, after `eepzdyapa49atk` failed to provision"
+   reopened a pod that row was recording the replacement of.
+3. My own Phase 1 CREATE row never named its pod, so `veo3ib6djk3fyc` appeared
+   to have been deleted without ever being created.
+
+Every one of those three was a defect in the checker or the log that the
+checker itself surfaced, which is the argument for writing it. `--live` asks
+RunPod directly, so the file's bookkeeping and the account's actual state are
+compared rather than conflated.
 
 ## Rows 11 to 14, in detail
 

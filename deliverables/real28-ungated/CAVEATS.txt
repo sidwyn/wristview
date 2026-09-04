@@ -1,0 +1,61 @@
+real27 wrist renders on the real28scanb reconstruction, 29 August. UNGATED.
+DO NOT TRAIN ON THIS.
+
+What changed against deliverables/real27-ungated
+------------------------------------------------
+Only the scan. Same 29 clips, same corrected mount (62.1 degrees horizontal to
+match the recorded wrist camera, mount pitched 12.02 degrees down), same
+spherical harmonics degree 0.
+
+  scan floor       15.22 cm  ->  7.11 cm
+  views under 15cm  0 of 586 ->  313 of 1051
+  splat            7,062,083 Gaussians, 26.19 dB
+                -> 6,731,793 Gaussians, 25.86 dB over 1051 views
+  sha256 943198be4379bbaf0901ea50becf99b9bdcd1efc8dedd31c6fdfaa4e5ed5c61a
+
+Result: median clip alpha 0.939 -> 0.971, worst clip 0.687 -> 0.920. The clips
+that were worst improved most, which is the signature of a lifted floor rather
+than a global brightening.
+
+The mid-band, which is what this was for
+----------------------------------------
+Alpha by decile of clip progress, old splat against new:
+
+  decile        old     new
+  20 to 30%   0.934   0.968
+  30 to 40%   0.754   0.918
+  40 to 50%   0.727   0.905
+
+Deciles 3 to 5 are the reach and the grasp, when the camera is lowest. They
+rose 0.805 to 0.930, nearly three times the lift of the band that was already
+clean. That was predicted in writing before the numbers landed.
+
+The other half of that prediction was WRONG: the floor was predicted near
+3.5 cm and reached 7.11 cm. Both halves are recorded unedited in
+runs/real27/REPORT-real27.md.
+
+Why it is still not a dataset
+-----------------------------
+render.allow_extrapolation was TRUE on purpose. These pictures exist so the
+coverage threshold can be fitted by looking rather than by argument. The
+previous limit of 0.50 was fitted against real26bm, which was itself rendered
+with the bypass on.
+
+Still enforced: wrist cameras below the desk plane dropped, 9 frames; control
+frames resting on an unmeasured hand pose dropped, 1,875; 2,645 cameras remain.
+
+This is the BARE SPLAT LAYER. No gripper, no object, no fisheye. Stage 5 owns
+those three and has never run on real27. The August deliverables in
+deliverables/wrist-gsplat had all of them, so this is still not a like for like
+comparison with them.
+
+Contents
+--------
+videos/                     29 side-by-side mp4s, ego left, rendered wrist
+                            right, named by clip median alpha
+strips/                     29 six-frame strips, each captioned with the old
+                            alpha for comparison
+old_vs_new_midband.png      the five biggest movers, old and new interleaved at
+                            30, 40 and 50 per cent through each take
+coverage_measurements.json  per clip: old and new alpha, predicted coverage,
+                            frames clearing the proposed per-frame rule

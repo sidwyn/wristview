@@ -1,0 +1,50 @@
+real27 wrist renders, 28 August. UNGATED. DO NOT TRAIN ON THIS.
+
+What this is
+------------
+29 clips of real27 (demo_15 excluded), rendered from the real27full splat
+(7,062,083 Gaussians, 26.19 dB on its own 586 training views, sha256
+6fefc37950a5271d26f91812cb45b7090088393f55270176e8444a390c4013bb).
+
+Mount: FOV 62.1 degrees horizontal, matching the wrist camera the experiment
+records, with the mount pitched 12.02 degrees down so the finger tips land at
+77 per cent of frame height. Spherical harmonics degree 0.
+
+Why it is not a dataset
+-----------------------
+render.allow_extrapolation was set TRUE ON PURPOSE. Every clip here renders
+from viewpoints the scan never covered, and 22 of the 30 real27 clips fail the
+viewpoint gate. These pictures exist to fit the coverage threshold, because the
+previous threshold of 0.50 was itself fitted against real26bm, which was also
+rendered with the bypass on. Calibrating a gate against a bypassed gate is
+circular, and the way out was to look at renders.
+
+The gates go back on, hard, before anything trains.
+
+What was still enforced
+-----------------------
+- wrist cameras below the desk plane: dropped, 10 frames. Geometry, not a
+  threshold.
+- control-rate frames resting on an unmeasured hand pose: dropped, 1,875.
+- 2,645 cameras remain of 4,520.
+
+Contents
+--------
+strips/            one 6-frame strip per clip, named by measured mean alpha
+alpha_ladder.png   individual frames binned by their own alpha, 0.55 to 0.98.
+                   The readability break is at 0.85 to 0.88.
+midband.png        mid-band clips sampled 30 to 80 per cent through each take,
+                   showing that usability varies WITHIN a clip more than
+                   between clips.
+worst_best.png     the three worst and three best clips.
+coverage_measurements.json   per clip: predicted coverage, measured mean alpha,
+                   fraction of pixels under alpha 0.5.
+
+videos/
+-------
+29 side-by-side mp4s, ego source on the left, rendered wrist on the right,
+15 fps, named by measured mean alpha so they sort worst to best. Each frame
+carries its own alpha in the caption and a reminder that this is ungated.
+
+The ego frame is matched to the rendered camera through the control-rate
+timestamp, so the pairing is the one the pipeline uses, not a guess.
