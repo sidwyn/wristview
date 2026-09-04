@@ -36,6 +36,30 @@ from .logging_setup import get
 
 log = get(__name__)
 
+
+def working_video_backend() -> str:
+    """Return a decode backend that actually decodes on this machine.
+
+    lerobot's `get_safe_default_codec` asks `importlib.util.find_spec` whether
+    torchcodec is INSTALLED, and returns it when it is. That is not the
+    question. torchcodec is a thin wrapper over a `libtorchcodec_coreN.dylib`
+    that links against a specific libavutil, and this machine has FFmpeg 9
+    only, so every one of those five dylibs fails to load. `find_spec` sees the
+    Python package and says yes, and the export then dies on the first frame it
+    reads back. On 3 September that cost 416 s of writing before the check that
+    consumed it fell over.
+
+    So load it, rather than look for it.
+    """
+    try:
+        from torchcodec.decoders import VideoDecoder  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 - any failure means it cannot decode
+        log.warning("torchcodec cannot decode here, using pyav instead: %s",
+                    str(exc).splitlines()[0])
+        return "pyav"
+    return "torchcodec"
+
+
 # Every camera must share this. See configuration_diffusion.py:241.
 IMAGE_WIDTH, IMAGE_HEIGHT = 640, 360
 
@@ -515,7 +539,8 @@ def build_dataset(
     if verify:
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-        written_back = LeRobotDataset(repo_id=repo_id, root=out_root)
+        written_back = LeRobotDataset(repo_id=repo_id, root=out_root,
+                                      video_backend=working_video_backend())
         report = verify_alignment(written_back)
         (out_root / "alignment.json").write_text(json.dumps(report, indent=2))
     return dataset

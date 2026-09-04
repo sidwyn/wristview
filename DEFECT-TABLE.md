@@ -11,7 +11,7 @@ naming on its own: the code computed the exact number that described the
 failure, and then no code read it.** Not an approximation of that number, not a
 proxy. The number itself, correct, in memory, discarded.
 
-Rows 7, 9, 10, 11, 12 and 15 are all this. The trainer measured 17.51 dB on its
+Rows 7, 9, 10, 11, 12, 15, 40, 43 and 44 are all this. The trainer measured 17.51 dB on its
 own training views and nothing compared it to anything. The rasteriser counted
 11,076,570 dropped Gaussian-tile pairs, stored the count on the result object as
 `_overflow`, and no caller ever looked. `train_gsplat.py` printed a Gaussian
@@ -57,6 +57,17 @@ something must fail on it, or it must not be computed.**
 | 29 | The marker is treated as always available | that a fiducial was placed | whether anything can see it | id 0 found in 14 of 30 demo first frames; the scan render-band check unmeasurable on two scans running |
 | 30 | `estimate.object.prompt` was declared, documented, and read by nothing | the config file | what Stage 3 hands the detector | real27 sent the whole task sentence to Grounding DINO and got a box covering 93 per cent of the frame |
 | 31 | The rest-window guard required the still run to END before contact | whether the run overlapped the grasp | whether ENOUGH of it preceded the grasp | refused a valid take whose object sat still from frame 0 to 90 with contact at 75 |
+| 32 | The trainer printed a Gaussian count every 1,000 steps and had no ceiling and no checkpoint | that densification was happening | whether the run would fit in the card | real27full reached 8,126,424 Gaussians and 18.9 GiB at step 10,000 with 5,000 refinement steps left, on a 24 GB card holding no checkpoint |
+| 33 | The chain watcher grepped the pod transcript for its own completion token | whether the chain had finished | whether the chain had finished, as distinct from whether the watcher had asked | declared success 37 seconds in, matching the token inside its own echoed command |
+| 34 | `render.wrist_camera` places the camera by mount offset with no floor | where the camera sits relative to the hand | where the camera sits relative to the desk | 309 of 4,673 exported wrist cameras, 6.6 per cent, sit below the desk plane, the lowest at -20.3 cm |
+| 38 | The inlier RATIO rose when retrieval was thinned, while the poses got worse | how many attempted matches survived | whether the poses are right | at `retrieval_top_k=5` demo_22's ratio improved 0.8276 to 0.8687 while it lost 21 of 171 registered frames and a surviving frame moved 36.2 cm and 40.1 degrees |
+| 39 | The trainer sized its Gaussians with one dense `cdist` over every seed point | the mean distance to the three nearest neighbours | the same thing without allocating N squared floats | real28scanb seeded 78,961 points and asked for 23.23 GiB on a 23.53 GiB card, dying before step 1; real27full's 36,962 points needed 5.5 GiB and fit, so it had never shown |
+| 36 | The config comment claimed the finger tips land 77 per cent down the frame | nothing, it was a comment | where the mount actually puts them, 86.6 per cent | the framing claim went unchecked from the first commit, and narrowing the lens to the real camera's 62.1 degrees would have put the gripper out of frame entirely |
+| 37 | WiLoR reports confidence 1.000 on every valid frame of every clip | nothing | how much to trust a detection | two phantom hands in demo_28, on desk clutter with 5 of 21 landmarks in the image, entered the pipeline at full confidence and were reported as a badly shot take |
+| 35 | The viewpoint-coverage gate runs in Stage 5, after the GPU render | whether the render extrapolates | whether the render WILL extrapolate, while the GPU is not yet rented | real27full trained 40 minutes and rendered 14,019 frames that fail the project's own coverage limits: nearest scan view median 6.8 cm but p90 24.2 cm against a 15 cm limit, and 22.2 per cent of frames below the scan floor against a 10 per cent limit |
+| 40 | `scan_geometry` computes `height_min_m` and gates on `max_baseline_m` and `height_span_m` | whether the scan is VARIED enough | whether the scan went LOW enough | sept02_scan2 reported `height_min_m` 0.1972 m at Stage 1 and passed; that same number became `scan_floor_m` verbatim and failed 56 of 60 clips four hours and one pod later. Across eight reconstructions the gate has never once fired |
+| 41 | `close_range_coverage.py` measures the distance from the lens to the MARKER; the gate measures the distance to the nearest SCAN VIEW | how close the scan got to the marker, against 0.45 m | how close the scan got to where the wrist camera will fly, against 0.15 m | two tools named coverage, thresholds 3x apart, and the loose one runs first. It reported 0.290 m and "passes comfortably" on the scan that then failed 57 of 60 clips. Its own docstring names 0.15 m in its first paragraph |
+| 42 | The capture SOP fixed the marker at a fifth of the frame width | that the scan got close to the marker | where the lens physically stood | at f 1465 px on a 1920-wide frame, a fifth is 384 px, so a 100 mm marker pins the camera at 1444 x 0.1 / 384 = 0.376 m. The scan's low frames landed at a p90 of 0.38 m against a gate wanting 0.15-0.25 m. A framing rule silently set a position, and the two were never compared |
 
 ## Row 7, in detail
 
@@ -139,6 +150,71 @@ steps all sat at normal 0.050 s spacing. Fixing the time base raised the
 flagged count from 3 to 5, because the true intervals there are shorter than
 the nominal one.
 
+| 43 | `WiLoRHands.process` caught every per-frame exception, logged it at DEBUG, and returned the same empty frame a hand-free image gives | how many frames a hand was DETECTED in | how many frames the detector was ASKED and RAISED in | a torch downgrade made the MPS conv2d path raise on all 291 frames of demo_0; Stage 3 computed `hand detected on 0/291 frames (0%)`, logged it at INFO, and ran on into Stage 4. Ten hours were spent blaming the object dimensions |
+| 44 | `summarise` sets `passed = median <= limit` and writes `p90_px` and `max_px` beside it | whether the TYPICAL frame reprojects | whether ANY frame reprojects badly | `max_px` separates the two runs cleanly and the gate never reads it: on the healthy scan2 run 2 of 60 clips exceed the 25 px limit, worst 28.62; on the run with the broken hand path 56 of 60 exceed it, worst 55.17. Both report `"passed": true` on 60 of 60. The median is 0 of 60 over the limit in BOTH runs, so the statistic the gate does read has no discriminating power at all |
+
+## Rows 43 and 44, in detail
+
+These two are one incident. Row 43 broke the hand path on 3 September; row 44
+is the reason nobody noticed for ten hours.
+
+**Row 43.** A `pip install lerobot` at 15:58 moved torch from 2.13.0 to 2.10.0.
+The pipeline's own logs record the moment exactly:
+
+    15:40:49  Stage 5 · render      torch 2.13.0 on device mps
+    16:02:13  Stage 3 · estimate    torch 2.10.0 on device mps
+
+Under the changed torch the MPS conv2d path raises on the ViT slice
+`x[:, :, :, 32:-32]` for every frame. `process` caught it, logged
+`log.debug("WiLoR failed on a frame: %s", exc)`, and returned the same
+`HandFrame(detected=False, ...)` that an image with no hand in it produces.
+
+That is the whole defect. **A frame the backend refused to look at and a frame
+with nothing in it landed in the same counter.** Stage 3 divided that counter
+by the frame count and reported a detection rate of 0 per cent, at INFO, and
+continued. The one piece of code that reads `hand_detection_rate < 0.5` is a
+fixture escape hatch guarded by `groundtruth_path is not None`, so on real
+footage nothing reads it.
+
+The repair was itself a second instance of not reading the record. Torch was
+"restored" to 2.5.1 and ultralytics to 8.1.34 from memory. Neither was the
+version that worked. `runs/sept02_scan2/wristview.log` had said `torch 2.13.0
+on device mps` on every line since the run that produced the good hands, and
+2.5.1 fails on the same conv2d in the same place. The environments are now
+frozen in `ENV-MAIN.lock.txt` and `ENV-LEROBOT.lock.txt`.
+
+`raised_on_every_frame()` now separates the two cases and Stage 3 stops on it.
+It sets no threshold: a backend that raised on 100 per cent of the frames it
+was given is not a judgement about footage quality.
+
+**Row 44** is the check that should have caught row 43 within the minute, and
+its numbers are the clearest evidence in this file that the family named at the
+top of the page is still live.
+
+`summarise` in `reprojection.py` computes three statistics and writes all three
+into every `qc.json`:
+
+    "median_px": 8.06, "p90_px": 16.26, "max_px": 27.5, "limit_px": 25.0,
+    "passed": true
+
+`passed` is `bool(median <= limit)`. Over the 60 clips of each run:
+
+| run | clips | `passed: true` | median over 25 px | p90 over | **max over** | worst max |
+|---|---|---|---|---|---|---|
+| sept02_scan2, healthy hands | 60 | 60 | 0 | 0 | **2** | 28.62 |
+| broken hand path | 60 | 60 | 0 | 2 | **56** | 55.17 |
+
+Read the two columns the gate ignores. `max_px` puts 2 clips over the limit on
+the good run and 56 on the bad one. It is a clean separator, it was correct, it
+was written to disk 60 times, and no code compared it to the `limit_px` sitting
+in the same dictionary. Meanwhile the statistic the gate does read is 0 of 60
+in both runs: **the median cannot see this failure at all**, which is exactly
+standing rule 3.
+
+The threshold is not the problem and is not touched here. 25 px is documented
+in the file with its derivation. What the gate reads is the problem, and
+changing that changes what passes, so it is Sidwyn's call and not a repair to
+be slipped in beside an environment fix.
 
 ## Rows 11 to 14, in detail
 
@@ -469,3 +545,272 @@ after the release.
 
 A guard that rejects valid data is a defect, not caution. It costs a re-shoot
 just as surely as a guard that passes bad data costs a session.
+
+
+## Rows 32 to 35, in detail
+
+All four are from the real27 GPU session. Rows 32 and 33 are mine and were
+caught in the same session. Rows 34 and 35 are older and were exposed by it.
+
+Row 32. `train_gsplat.py` printed `gaussians N` on every thousandth step. That
+line existed because of row 12, where the count sat at the seed value for
+30,000 steps and nobody read it. The reader added then asks one question, has
+the count grown, and stops asking at step 2,000. Nothing watched it after that.
+real26bm finished at 4,998,950 Gaussians and 15.0 GiB, which fits. real27full
+passed 5.4 M by step 6,000 and reached 8,126,424 at 18.9 GiB by step 10,000,
+with refinement running to step 15,000. There was no checkpoint, so an
+out-of-memory crash would have destroyed the whole run.
+
+This is the house defect with a twist. The number was read, once, for one
+purpose, and that reading was mistaken for the number having a reader. A
+diagnostic needs a reader for each failure it can see. Growth and ceiling are
+two failures and the print served one.
+
+The fix adds `--max-gaussians`, default 7,000,000, which stops densification
+and says so in the log, and `--checkpoint-every`, default 5,000 steps. The
+capped run reached the cap at step 8,001 and finished 30,000 steps at 17.4 GiB
+and 26.19 dB.
+
+Row 33. The RunPod proxy shell echoes every command it receives, so the
+transcript holds the poll command as well as its output. The watcher grepped
+that transcript for `CHAIN_DONE` and found the word inside its own command, on
+the first poll, 37 seconds after a 45-minute job started. It reported success
+and the harness woke me to a chain that had not started training.
+
+The same family as rows 2 and 9: a measurement that cannot distinguish its
+subject from itself. The fix tests process state and an output file rather than
+log text, and splits the token so the echoed command cannot contain the string
+the test looks for. It was then run against the live chain and made to say
+`STATE=running` before being trusted.
+
+Row 34. `mount.py` requires `standoff_m` and rejects values outside 0.05 to
+1.0 m, which is a check on the offset. Nothing checks the result. A wrist
+camera 20.3 cm below the desk is not a viewpoint, and 309 frames were exported
+and rendered from positions like it. The renders from those frames are the
+black and blue ones in the contact sheet.
+
+The check to add is on the output, not the parameter: the wrist camera must sit
+above the desk plane, and a frame that does not is invalid, not merely odd.
+
+Row 35. This is the expensive one, and the gate was already written and
+correct. `coverage.render_viewpoint_coverage` holds `MAX_VIEWPOINT_GAP_M` of
+0.15 and `MAX_FRACTION_BELOW_SCAN_FLOOR` of 0.10, and Stage 5 raises on either.
+Stage 5 runs on the laptop, after the pod has trained the splat and drawn every
+frame, because Stage 5 owns the fisheye remap, the gripper and the object.
+`tools/export_wrist_cameras.py` ships the camera set to the pod and applies no
+gate at all.
+
+So the sequence was: export 4,673 cameras, rent a 4090, train 40 minutes,
+render 14,019 frames, download 1.9 GB, and only then reach the code that says
+20.8 per cent of those cameras are further than 15 cm from any scan view and
+22.2 per cent sit below the scan floor.
+
+The gate is in the wrong place, not wrong. It belongs in
+`export_wrist_cameras.py`, where a failure costs nothing.
+
+**Fixed.** `render_viewpoint_coverage` now runs in `export_wrist_cameras.py`
+before anything is written, and the export returns 1 without producing
+`wrist_cameras.npz`. The thresholds stay in `wristview.coverage`, so the export
+and Stage 5 read one set of numbers. The report is written either way, because
+a refusal with no evidence is not reviewable.
+
+Run against real27full, **22 of 30 clips fail**, every one of them on the
+scan-floor criterion:
+
+| | clips |
+|---|---|
+| pass | demo_6, 7, 11, 23, 24, 25, 26, 27 |
+| fail, frames below the scan floor | 21 clips, from 12.3 per cent (demo_12) to 60.1 per cent (demo_15) |
+| fail, median gap as well | demo_5, at 27.2 cm against the 15 cm limit |
+
+`tests/test_export_gate.py` holds the order check, so a future edit that writes
+the cameras first fails a test rather than a session. It was verified by
+mutation: removing the `return 1` makes the suite fail.
+
+**A postscript on how nearly this was reported wrongly.** Reading the scan
+poses back with pycolmap, I multiplied them by the metric scale factor. Stage 1
+had already transformed the reconstruction in place, so the model on disk is
+already in metres and I scaled it twice. That put every scan camera at 32.6 to
+38.9 cm above the desk and made 90.7 per cent of wrist views fall below the
+scan's lowest, which reads as a capture that never went low enough and a
+re-shoot. The true scan spans 15.2 to 92.6 cm with a third of its views in the
+15 to 25 cm band, and the close pass is present and good.
+
+What caught it was Stage 1's own record disagreeing: it had logged a baseline
+of 0.862 m and a path length of 6.468 m where I computed 0.070 m and 0.524 m,
+a constant factor of 12.34, which is 1 over the scale factor. Recomputing from
+`01_scene/cameras.json`, the poses Stage 1 actually used, reproduced its
+numbers exactly.
+
+Standing rule 1 earned its place here: a quantity is not verified until a
+source with no access to it agrees. The disagreement was visible in a file
+written weeks before and the only reason it surfaced is that I compared against
+it before speaking.
+
+
+## Rows 36 and 37, in detail
+
+Row 36. `configs/default.yaml` carried "These three put the finger tips about
+77 percent of the way down the frame" from the first commit. The mount put them
+at 86.6 per cent. Nothing compared the two, because a number in a comment has
+no reader, which is this project's most repeated defect wearing a different
+hat.
+
+It stopped being cosmetic when the lens was matched to the wrist camera the
+experiment actually records, 62.1 degrees horizontal against the 90 that was
+configured. The finger tips sit 22.38 degrees below the optical axis, fixed by
+`mount_back_m` and `mount_up_m`. At 90 degrees the vertical half-angle is 29.4
+and they are in frame. At 62.1 it is 18.7 and they land at row 408 of a
+360-row image: the gripper leaves the picture.
+
+The claim now lives in `render.wrist_camera.framing_row_fraction`,
+`mount.fingertip_row_fraction` computes the delivered value, and
+`tests/test_mount_framing.py` fails when they disagree. The same test pins the
+sign of the new `pitch_down_deg`, checks that pitch rotates without
+translating so the coverage gate cannot be moved by it, and asserts the old
+settings would have failed.
+
+Row 37. WiLoR's confidence is 1.000 on every valid frame of all 30 real27
+clips. A constant is not a confidence.
+
+**Does anything consume it? No.** `backends/hands.py` line 237 writes
+`confidence=1.0` as a literal on the WiLoR path. Stage 3 collects it into
+`hand_confidence` and stores it in `hand.npz` as `confidence`. Nothing reads it
+back: not Stage 4, not the QC gates, not the reprojection check, not the
+retarget velocity gate. Searched across `src` and `tools`, the only other
+matches are MediaPipe's own `min_detection_confidence` argument, which is a
+different thing.
+
+So the field is inert, and that is the small mercy: no decision was made on a
+score that cannot be low. The damage was to a human reading it, which is a real
+cost but a recoverable one. **If anything ever starts reading it, it must first
+stop being a literal.** The MediaPipe path at line 320 does return a real score,
+`scores[best]`, so the field is only constant on the backend actually in use.
+
+The fix shipped is not a better score, it is a different signal:
+`handqc.drop_isolated` in Stage 3. Applied retroactively to real27, it removes
+exactly 2 frames across all 30 clips, both from demo_28, and turns that clip's
+lead-in from 0 into 21 and its 19 gaps into 0. Two frames of demo_28 hold no hand at
+all, in the top right corner on desk clutter, with 5 of 21 landmarks inside the
+image, and they entered the pipeline at full confidence.
+
+The cost was a wrong diagnosis, not corrupted data: demo_28 was recorded as a
+take shot with the hand already in frame, and it was reported that way earlier
+in this session. The take is fine. The real hand enters at frame 21, in line
+with the other 29 clips at 18 to 52.
+
+What separates a phantom from a legitimate detection at the frame edge is not
+the landmark count. Other clips hold valid frames with as few as 2 landmarks in
+view and they are real hands entering the shot. It is **isolation**: across all
+30 clips, exactly two valid frames have no valid neighbour on either side, and
+both are demo_28's phantoms.
+
+
+## Row 38, in detail
+
+`retrieval_top_k` sets how many scan frames each demo frame is matched against.
+Halving it from 10 to 5 halves the matching cost, which is 94 per cent of Stage
+2 and about 1.6 hours across 30 clips.
+
+On strong clips it is free. demo_6 and demo_15 registered identically at both
+settings and their poses agree to 2.3 mm and 0.21 degrees at worst.
+
+On demo_22, the one clip with a marginal inlier ratio, k=5 dropped 21 of 171
+registered frames and moved a surviving frame 36.2 cm and 40.1 degrees.
+
+**And the inlier ratio went up while that happened, 0.8276 to 0.8687.** Fewer
+retrieved neighbours means fewer hard pairs are attempted, so the ratio rises
+as the evidence thins. The metric moved the right way for the wrong reason,
+which is worse than a metric that does not move: a flat number invites a look,
+an improving number closes the question.
+
+An adaptive rule cannot save it either. Deciding whether k=5 is safe for a clip
+requires the k=10 result to compare against, so the cheap setting can only be
+validated by paying for the expensive one. `retrieval_top_k` stays at 10.
+
+The general form, and it is the reason this row exists: **before trusting a
+ratio, ask what changed in its denominator.** Standing rule 3 asks whether a
+metric can see the failure mode. This one can be actively misled by it.
+
+
+## Row 39, in detail
+
+`train_gsplat.py` set each Gaussian's initial scale from the mean distance to
+its three nearest neighbours, computed as a single `torch.cdist` of every seed
+point against every other. That allocates N squared floats.
+
+| run | seed points | allocation | outcome |
+|---|---|---|---|
+| real27full | 36,962 | 5.5 GiB | fit, unnoticed |
+| **real28scanb** | **78,961** | **23.23 GiB** | **out of memory on a 23.53 GiB card** |
+
+The failure mode is the wrong way round, and that is what makes it worth a row:
+**the cost is quadratic in a number that grows every time the capture gets
+better.** A denser scan is the goal, and this made a denser scan fatal. It
+would have gone off on any future session that improved, and it went off on the
+first one that did.
+
+It also failed before step 1, so it cost only minutes. Row 32's cap and the
+checkpointing added then are what keep a late failure cheap; this one was early
+by luck, not design.
+
+Fixed by chunking the rows: peak is now `chunk x N x 4` bytes and independent
+of N, sized to a 1 GiB budget. real28scanb runs at 3,399 rows per chunk and
+1.00 GiB, and real27full's smaller cloud lands at the same 1.00 GiB rather than
+5.5.
+
+## Rows 40 to 42, in detail
+
+Row 40 is the purest case of the family this file opens with, and the most
+expensive. `scan_geometry` runs at **Stage 1**. Its own docstring says why:
+
+> Measure whether the scan can constrain geometry. Run this before a render.
+> Stage 1 reports this. A reshoot is still cheap at that point.
+
+It computes `height_min_m`. That value is not an approximation of the quantity
+that later fails the run. It IS that quantity: `render_viewpoint_coverage` takes
+`scan_floor = _heights(scan, ...).min()`, the same minimum over the same
+centres. The number was correct, in memory, printed into
+`01_scene/meta.json`, and no code compared it to anything.
+
+Its two thresholds ask whether the scan is varied enough, not whether it went
+low enough:
+
+| run | `height_min_m` | `h_span` | `baseline` | gate |
+|---|---|---|---|---|
+| real28c | 0.0708 | 1.0007 | 1.6702 | pass |
+| real31full | 0.1205 | 1.0505 | 1.9563 | pass |
+| real31scan | 0.1383 | 1.0189 | 1.9475 | pass |
+| real31scan0 | 0.1205 | 1.0505 | 1.9563 | pass |
+| sept02_05x | 0.2313 | 0.5599 | 1.9729 | pass |
+| sept02_1x | 0.3253 | 0.5281 | 1.8432 | pass |
+| sept02_scan | 0.2945 | 0.5988 | 3.0654 | pass |
+| sept02_scan2 | **0.1972** | 0.6062 | 2.0681 | **pass** |
+
+Eight reconstructions, eight passes. The gate has no discriminating power on
+this corpus. `height_min_m`, which it declines to read, separates the two
+populations with an empty band between 0.1383 and 0.1972 — every scan that
+supported a render sits at or below 0.1383, every scan that was too high sits
+at or above 0.1972. A threshold anywhere in that band would have stopped
+sept02_scan2 at Stage 1, 45 minutes in, before any pod, instead of four hours
+later. The natural value is 0.15, which is already `MAX_VIEWPOINT_GAP_M`; the
+scan floor has to sit within about one gap-length of where the wrist camera
+flies.
+
+Worse than silent: **the span gate rewards the failure mode.** Height span is
+satisfied by going HIGH. The sept02 scans span 0.53 to 0.61 m by starting at
+chest height and passing. A tight, correct close pass has a SMALLER span. On
+that axis Stage 1 and Stage 5 pull in opposite directions.
+
+Rows 41 and 42 are the same fault one level up, in the tools and the SOP rather
+than the pipeline. Two quantities that both sound like "how close was the
+scan", with thresholds 3x apart, and the loose one is the one that runs early
+and gets quoted. And a capture instruction phrased as framing, which fixes a
+distance by arithmetic nobody did, in the opposite direction from the gate.
+
+The three share the shape of every row above them. The information existed. In
+row 40 it was computed and unread; in row 41 it was measured against the wrong
+constant; in row 42 it was implied by a rule and never derived. **If a number is
+worth computing, something must fail on it, or it must not be computed** — and
+row 42 adds the corollary: if an instruction sets a number, write the number
+down, because otherwise nothing can check it.
