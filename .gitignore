@@ -56,3 +56,6 @@ exports/
 artifacts/
 *.pt
 *.ply
+night-logs/
+
+.venv-lerobot/

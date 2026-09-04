@@ -258,6 +258,18 @@ def _estimate_episode(
                         clip_id, index + 1, count, int(hand_valid.sum()),
                     )
 
+            # A backend that raised on every frame is broken, not looking at an
+            # empty scene, and a detection rate of 0% cannot tell the two apart.
+            # Stop here rather than carry an all-zero hand track into Stage 4.
+            broken = getattr(estimator, "raised_on_every_frame", lambda: None)()
+            if broken is not None:
+                raise RuntimeError(
+                    f"{clip_id}: the {hand_kind} backend raised on all "
+                    f"{getattr(estimator, 'frames_seen', count)} frames, so the "
+                    f"hand track is empty for a reason that has nothing to do "
+                    f"with the footage. Last error: {broken}"
+                )
+
     # A detection no neighbouring frame supports is a false positive, and the
     # detector's confidence cannot say so: WiLoR returns 1.000 on every frame it
     # accepts. See handqc and defect 37.
@@ -1087,9 +1099,36 @@ def run(ctx: RunContext) -> dict:
             rec.note("no splat available, so monocular depth stays relative")
 
         # ---- run every accepted episode ----------------------------------
+        #
+        # `estimate.clips` names a subset, as `localize.clips` does for Stage 2.
+        # Stage 3 is 90 minutes for 60 clips, so re-running two of them after a
+        # code fix should cost three minutes, not an hour and a half. A partial
+        # run MERGES into the existing summary rather than replacing it, so the
+        # clips it did not touch keep their previous verdicts instead of
+        # silently disappearing.
+        only = cfg.get("clips")
+        if only:
+            only = [str(c) for c in only]
+            known = [k for k, v in manifest["clips"].items() if v["kind"] == "demo"]
+            missing = [c for c in only if c not in known]
+            if missing:
+                raise ValueError(
+                    f"estimate.clips names {missing}, which Stage 0 did not "
+                    f"ingest. Known demos: {known}"
+                )
+            log.warning("estimate.clips restricts this run to %d of %d demos: %s",
+                        len(only), len(known), ", ".join(only))
+
         statuses = {}
+        summary_path_existing = ctx.stage_dir(STAGE, create=False) / "summary.json"
+        if only and summary_path_existing.exists():
+            statuses = read_json(summary_path_existing)
+            log.info("merging into %d existing episode summaries", len(statuses))
+
         for clip_id, clip in manifest["clips"].items():
             if clip["kind"] != "demo":
+                continue
+            if only and clip_id not in only:
                 continue
             episode_status = localize_summary.get(clip_id, {})
             if episode_status.get("rejected", True):
