@@ -1,0 +1,107 @@
+{
+ "arm": "A_prime",
+ "seed": 1,
+ "steps": 2000,
+ "freeze_encoder": false,
+ "down_dims": [
+  512,
+  1024,
+  2048
+ ],
+ "trainable_params_m": 263.013671,
+ "frozen_params_m": 0.0,
+ "batch_size": 32,
+ "holdout": [
+  3,
+  8,
+  13,
+  18,
+  23,
+  28,
+  33,
+  38,
+  43,
+  48
+ ],
+ "cameras": [
+  "observation.images.ego"
+ ],
+ "train_rows": 7552,
+ "test_rows": 1860,
+ "action_error_mm_mean": 6.691779613494873,
+ "action_error_mm_median": 5.072003364562988,
+ "action_error_mm_p90": 12.528100967407227,
+ "final_train_loss": 0.0391273683719337,
+ "val_curve": [
+  {
+   "step": 250,
+   "val_mm_mean": 8.743780136108398,
+   "val_mm_median": 7.193454742431641,
+   "train_loss": 0.29565877113491296
+  },
+  {
+   "step": 500,
+   "val_mm_mean": 8.563033103942871,
+   "val_mm_median": 6.599676132202148,
+   "train_loss": 0.05605576979368925
+  },
+  {
+   "step": 750,
+   "val_mm_mean": 7.081797122955322,
+   "val_mm_median": 5.256506443023682,
+   "train_loss": 0.04810627572983504
+  },
+  {
+   "step": 1000,
+   "val_mm_mean": 7.125063419342041,
+   "val_mm_median": 5.281973838806152,
+   "train_loss": 0.0440842242538929
+  },
+  {
+   "step": 1250,
+   "val_mm_mean": 6.723958492279053,
+   "val_mm_median": 5.076848030090332,
+   "train_loss": 0.04249569571763277
+  },
+  {
+   "step": 1500,
+   "val_mm_mean": 7.265782833099365,
+   "val_mm_median": 5.222847938537598,
+   "train_loss": 0.04115201688185334
+  },
+  {
+   "step": 1750,
+   "val_mm_mean": 7.061098575592041,
+   "val_mm_median": 5.267998218536377,
+   "train_loss": 0.03917541958391666
+  },
+  {
+   "step": 2000,
+   "val_mm_mean": 6.567637920379639,
+   "val_mm_median": 5.008969783782959,
+   "train_loss": 0.0391273683719337
+  }
+ ],
+ "still_falling_at_end": false,
+ "last4_val_mm": [
+  6.723958492279053,
+  7.265782833099365,
+  7.061098575592041,
+  6.567637920379639
+ ],
+ "train_minutes": 18.66046480735143,
+ "peak_vram_gb": 10.500993024,
+ "device": "cuda",
+ "lerobot_version": "0.4.4",
+ "torch_version": "2.10.0+cu128",
+ "scored_action_deltas": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7
+ ]
+}

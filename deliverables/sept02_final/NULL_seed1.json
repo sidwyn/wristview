@@ -1,0 +1,105 @@
+{
+ "arm": "NULL",
+ "seed": 1,
+ "steps": 2000,
+ "freeze_encoder": false,
+ "down_dims": [
+  512,
+  1024,
+  2048
+ ],
+ "trainable_params_m": 248.547975,
+ "frozen_params_m": 0.0,
+ "batch_size": 32,
+ "holdout": [
+  3,
+  8,
+  13,
+  18,
+  23,
+  28,
+  33,
+  38,
+  43,
+  48
+ ],
+ "cameras": [],
+ "train_rows": 7552,
+ "test_rows": 1860,
+ "action_error_mm_mean": 6.625604629516602,
+ "action_error_mm_median": 5.17709493637085,
+ "action_error_mm_p90": 12.476757049560547,
+ "final_train_loss": 0.03914539969339967,
+ "val_curve": [
+  {
+   "step": 250,
+   "val_mm_mean": 8.487181663513184,
+   "val_mm_median": 6.922328948974609,
+   "train_loss": 0.3305622757822275
+  },
+  {
+   "step": 500,
+   "val_mm_mean": 8.503072738647461,
+   "val_mm_median": 6.546554088592529,
+   "train_loss": 0.055352811731398104
+  },
+  {
+   "step": 750,
+   "val_mm_mean": 7.10435152053833,
+   "val_mm_median": 5.3332319259643555,
+   "train_loss": 0.04740078091621399
+  },
+  {
+   "step": 1000,
+   "val_mm_mean": 7.495583534240723,
+   "val_mm_median": 5.694846153259277,
+   "train_loss": 0.04357824026793242
+  },
+  {
+   "step": 1250,
+   "val_mm_mean": 7.154226303100586,
+   "val_mm_median": 5.770911693572998,
+   "train_loss": 0.04229089936614037
+  },
+  {
+   "step": 1500,
+   "val_mm_mean": 7.2440409660339355,
+   "val_mm_median": 5.473446846008301,
+   "train_loss": 0.04092911651358008
+  },
+  {
+   "step": 1750,
+   "val_mm_mean": 6.900197982788086,
+   "val_mm_median": 5.404379844665527,
+   "train_loss": 0.03902897306531668
+  },
+  {
+   "step": 2000,
+   "val_mm_mean": 6.544765949249268,
+   "val_mm_median": 5.104333877563477,
+   "train_loss": 0.03914539969339967
+  }
+ ],
+ "still_falling_at_end": true,
+ "last4_val_mm": [
+  7.154226303100586,
+  7.2440409660339355,
+  6.900197982788086,
+  6.544765949249268
+ ],
+ "train_minutes": 14.180749940872193,
+ "peak_vram_gb": 5.269589504,
+ "device": "cuda",
+ "lerobot_version": "0.4.4",
+ "torch_version": "2.10.0+cu128",
+ "scored_action_deltas": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7
+ ]
+}
