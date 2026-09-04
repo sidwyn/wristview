@@ -215,6 +215,53 @@ The threshold is not the problem and is not touched here. 25 px is documented
 in the file with its derivation. What the gate reads is the problem, and
 changing that changes what passes, so it is Sidwyn's call and not a repair to
 be slipped in beside an environment fix.
+| 45 | `train_arm.py` scored `pred[:, :8]` against `truth[:, :8]` | the policy's prediction against what the operator did | the same thing at the same instants | `generate_actions` returns the horizon sliced `[n_obs_steps-1 : n_obs_steps-1+n_action_steps]`, deltas 0 to 7, and the recorded chunk starts at delta -1. Every arm of real31 was scored against ground truth shifted one frame, 1/15 s, into the past |
+| 46 | `analytic_floors.py` scored the floors over all 16 deltas while `train_arm.py` scored the arms over 8 | the floor and the arm | the floor and the arm ON THE SAME WINDOW | the floors carried deltas out to +14, where any predictor is worse, and the arms did not. On sept02_final's holdout the window is worth 6.25 to 6.14 mm to FLOOR-MEAN and 5.31 to 3.72 mm to FLOOR-PERSISTENCE, so the two sides of the gate were never like for like |
+| 47 | `DiffusionPolicy(cfg, dataset_stats=stats)` | nothing; lerobot 0.4 takes `**kwargs` and drops it | that the actions are normalised before training | normalisation moved to a processor pipeline in 0.4. The argument is accepted, discarded, and no warning is issued. The policy then trains on raw metres, actions of order 1e-3 against a unit-variance noise schedule, learns nothing, and reads exactly like a true null result. Measured: action sd 0.0148 raw against 0.3850 normalised, a factor of 26 |
+
+## Rows 45 to 47, in detail
+
+All three sit under the Phase 1 gate, none of them raises, and each on its own
+would have made the answer meaningless. They were found by reading what the
+library does rather than by running it, before a pod was rented.
+
+Rows 45 and 46 are one fault seen twice: **the two sides of a comparison were
+measured over different windows.** A diffusion policy configured with
+`n_obs_steps=2, horizon=16, n_action_steps=8` has
+
+    action_delta_indices   [-1, 0, 1, 2, ... 14]      the recorded chunk
+    generate_actions       [1:9] of that              deltas 0 to 7
+
+so the prediction covers deltas 0 to 7. The arms were scored against
+`truth[:, :8]`, deltas -1 to 6, one frame in the past. The floors were scored
+against all sixteen, out to +14. Neither matched the other and neither matched
+the policy. Both now score deltas 0 to 7, the offset is applied once, and the
+score raises if the two lengths ever disagree again.
+
+Row 47 is the most dangerous of the three because its failure is
+indistinguishable from the result the experiment is trying to measure.
+`DiffusionPolicy.__init__` in lerobot 0.4 reads
+
+    def __init__(self, config: DiffusionConfig, **kwargs):
+
+and the docstring still documents `dataset_stats`, which no longer exists as a
+parameter. Normalisation moved to `processor_diffusion.py`. So
+`DiffusionPolicy(cfg, dataset_stats=stats)` runs, returns a policy, trains, and
+converges to nothing, because the actions are displacements of order 1e-3 m
+being fitted against a unit-variance noise schedule. **An arm that scores at
+the floor is the finding this experiment exists to produce.** Had this run,
+Phase 1 would have reported "53 episodes is not enough to learn this task
+offline" and the cause would have been an unread keyword argument.
+
+There is a fourth thing worth recording that is not a defect in the code but a
+gap in what it wrote down. real31's nine training runs each recorded twenty
+fields of result and not one of them named the version of the library that
+produced the numbers. As a result the lerobot that scored A' at 14.73 mm cannot
+now be identified: no released version between 0.3.3 and 0.4.4 has a
+`predict_action_chunk` that accepts a batch rather than reading an inference
+queue, so the code path that produced the published figure cannot be
+reconstructed from the repository. Results now carry `lerobot_version`,
+`torch_version` and `scored_action_deltas`.
 
 ## Rows 11 to 14, in detail
 
