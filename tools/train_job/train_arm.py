@@ -12,6 +12,19 @@ every frame of every held-out episode.
 NULL sees no camera at all. It is the sanity floor: a policy that can only
 read proprioception. If A' and B' sit near NULL, nothing was learned from
 pixels and every later number is arithmetic on noise.
+
+NULL crashed on 1 September in three minutes with "You must provide at least
+one image or the environment state among the inputs". That is
+`configuration_diffusion.py:230`, a CONFIG assertion, and the model underneath
+does not share it: `_prepare_global_conditioning` opens with
+`global_cond_feats = [batch[OBS_STATE]]`, unconditionally, and appends images
+and env-state only if the config declares them. A state-only diffusion policy
+runs; lerobot simply refuses to configure one.
+
+So NULL declares the state a second time, as the env-state feature, and is fed
+a copy of it. The conditioning vector becomes the same 7 proprioceptive numbers
+twice. That adds no information, which is the point: NULL must see no pixels,
+and it now does not.
 """
 from __future__ import annotations
 
@@ -27,6 +40,7 @@ EGO = "observation.images.ego"
 WRIST = "observation.images.wrist"
 WRIST_REAL = "observation.images.wrist_real"
 STATE, ACTION = "observation.state", "action"
+ENV_STATE = "observation.environment_state"
 
 ARMS = {
     "NULL": [],
@@ -34,6 +48,54 @@ ARMS = {
     "B_prime": [EGO, WRIST],
     "C": [EGO, WRIST_REAL],
 }
+
+
+def _lerobot_version() -> str:
+    try:
+        from importlib.metadata import version
+        return version("lerobot")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def working_video_backend() -> str:
+    """Return a decode backend that actually decodes here.
+
+    lerobot's `get_safe_default_codec` asks `find_spec` whether torchcodec is
+    INSTALLED and says yes when it is. torchcodec is a wrapper over a dylib
+    linked against a specific libavutil, so it can be installed and unable to
+    open a single frame. Load it instead of looking for it.
+
+    Duplicated from `wristview.lerobot_export` on purpose: this file is copied
+    to a rented pod on its own and must not need the package.
+    """
+    try:
+        from torchcodec.decoders import VideoDecoder  # noqa: F401
+    except Exception as exc:  # noqa: BLE001 - any failure means it cannot decode
+        print(f"  torchcodec cannot decode here, using pyav: "
+              f"{str(exc).splitlines()[0]}", flush=True)
+        return "pyav"
+    return "torchcodec"
+
+
+class _WithEnvState(torch.utils.data.Dataset):
+    """A dataset that also serves `observation.state` under the env-state key.
+
+    A copy, not a view: the policy normalises the two features separately and
+    must not be able to write through one into the other.
+    """
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.meta = inner.meta
+
+    def __len__(self) -> int:
+        return len(self.inner)
+
+    def __getitem__(self, index: int) -> dict:
+        item = self.inner[index]
+        item[ENV_STATE] = item[STATE].clone()
+        return item
 
 
 def main() -> int:
@@ -59,9 +121,13 @@ def main() -> int:
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
     from lerobot.policies.diffusion.configuration_diffusion import DiffusionConfig
     from lerobot.policies.diffusion.modeling_diffusion import DiffusionPolicy
+    from lerobot.policies.diffusion.processor_diffusion import (
+        make_diffusion_pre_post_processors,
+    )
+    from lerobot.utils.constants import OBS_IMAGES
 
     root = Path(args.dataset).resolve()
-    repo_id = "wristview/real31full"
+    repo_id = f"wristview/{root.parents[1].name}"
     holdout = [int(x) for x in args.holdout.split(",")]
     out = Path(args.out); out.mkdir(parents=True, exist_ok=True)
 
@@ -72,6 +138,9 @@ def main() -> int:
     IMG = PolicyFeature(type=FeatureType.VISUAL, shape=(3, 360, 640))
     inputs = {c: IMG for c in cams}
     inputs[STATE] = PolicyFeature(type=FeatureType.STATE, shape=(7,))
+    # See the module docstring. Only the camera-free arm needs this.
+    if not cams:
+        inputs[ENV_STATE] = PolicyFeature(type=FeatureType.ENV, shape=(7,))
     cfg = DiffusionConfig(
         input_features=inputs,
         output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
@@ -82,22 +151,40 @@ def main() -> int:
            if args.down_dims else {}),
     )
 
-    base = LeRobotDataset(repo_id=repo_id, root=root)
+    base = LeRobotDataset(repo_id=repo_id, root=root,
+                          video_backend=working_video_backend())
     stats = {k: {kk: (v.numpy() if hasattr(v, "numpy") else v) for kk, v in d.items()}
              for k, d in base.meta.stats.items()}
+    if not cams:
+        stats[ENV_STATE] = dict(stats[STATE])
     fps = base.meta.fps
     delta = {**{c: [i / fps for i in cfg.observation_delta_indices] for c in cams},
              STATE: [i / fps for i in cfg.observation_delta_indices],
              ACTION: [i / fps for i in cfg.action_delta_indices]}
-    full = LeRobotDataset(repo_id=repo_id, root=root, delta_timestamps=delta)
+    full = LeRobotDataset(repo_id=repo_id, root=root, delta_timestamps=delta,
+                          video_backend=working_video_backend())
+    if not cams:
+        full = _WithEnvState(full)
 
-    epi = np.array([int(full[i]["episode_index"]) for i in range(len(full))])
+    # `full[i]` decodes every camera for that row. Reading the episode index
+    # that way costs 3 video decodes per row, 28,236 on this dataset, before a
+    # single training step, and every decoded frame is discarded. The column
+    # lives in parquet.
+    base._ensure_hf_dataset_loaded()
+    epi = np.asarray(base.hf_dataset["episode_index"], dtype=np.int64)
     train_idx = np.nonzero(~np.isin(epi, holdout))[0]
     test_idx = np.nonzero(np.isin(epi, holdout))[0]
     print(f"{args.arm} seed {args.seed}: {len(train_idx)} train rows, "
           f"{len(test_idx)} held-out rows from episodes {holdout}", flush=True)
 
-    policy = DiffusionPolicy(cfg, dataset_stats=stats).to(device)
+    # lerobot 0.4 moved normalisation OUT of the policy and into a processor
+    # pipeline, and `DiffusionPolicy.__init__` now swallows `dataset_stats`
+    # through `**kwargs`. Passing it, as this file used to, therefore trains on
+    # raw metres: actions of order 1e-3 against a unit-variance noise schedule.
+    # Nothing raises. The policy just learns nothing and the arm reads as a
+    # null result. Normalisation is explicit here for that reason.
+    policy = DiffusionPolicy(cfg).to(device)
+    preprocess, postprocess = make_diffusion_pre_post_processors(cfg, dataset_stats=stats)
 
     # `pretrained_backbone_weights` already defaults to ImageNet ResNet18, so
     # the encoder starts pretrained either way. Freezing it right-sizes the
@@ -127,22 +214,39 @@ def main() -> int:
         torch.utils.data.Subset(full, test_idx.tolist()),
         batch_size=args.batch_size, shuffle=False, num_workers=2)
 
+    # WHICH STEPS ARE COMPARED. `generate_actions` returns the horizon sliced
+    # `[n_obs_steps - 1 : n_obs_steps - 1 + n_action_steps]`, so with
+    # action_delta_indices [-1, 0, 1, ... 14] the prediction is for deltas
+    # 0 to 7. The recorded chunk starts at delta -1. This file used to compare
+    # the prediction against `truth[:, :8]`, which is deltas -1 to 6: every arm
+    # was scored against ground truth shifted one frame, 1/15 s, into the past.
+    # The offset is applied once, here, and `phase0_floors.py` scores the same
+    # slice so the arms and the floors are comparable.
+    PRED_START = cfg.n_obs_steps - 1
+    PRED_STOP = PRED_START + cfg.n_action_steps
+
     def score() -> np.ndarray:
         """Predicted action against the recorded one, in millimetres."""
         policy.eval()
         errs = []
         with torch.no_grad():
             for batch in test_loader:
-                batch = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in batch.items()}
-                pred = policy.predict_action_chunk(batch) if hasattr(policy, "predict_action_chunk") \
-                    else policy.select_action(batch)
-                truth = batch[ACTION]
-                if pred.ndim == 3 and truth.ndim == 3:
-                    n = min(pred.shape[1], truth.shape[1])
-                    a, b = pred[:, :n, :3], truth[:, :n, :3]
-                else:
-                    a, b = pred[..., :3], truth[..., :3]
-                errs.append(torch.linalg.norm(a - b, dim=-1).flatten().cpu().numpy())
+                truth = batch[ACTION][:, PRED_START:PRED_STOP, :3].to(device)
+                prepared = preprocess(dict(batch))
+                if cfg.image_features:
+                    prepared[OBS_IMAGES] = torch.stack(
+                        [prepared[key] for key in cfg.image_features], dim=-4)
+                pred = policy.diffusion.generate_actions(prepared)
+                pred = postprocess(pred).to(device)
+                if pred.shape[1] != truth.shape[1]:
+                    raise RuntimeError(
+                        f"the policy returned {pred.shape[1]} action steps and "
+                        f"{truth.shape[1]} were sliced from the recorded chunk. "
+                        f"These must match or the score compares different "
+                        f"instants."
+                    )
+                errs.append(torch.linalg.norm(pred[..., :3] - truth, dim=-1)
+                            .flatten().cpu().numpy())
         policy.train()
         return np.concatenate(errs) * 1000.0
 
@@ -153,7 +257,7 @@ def main() -> int:
     started = time.time(); step = 0; losses = []; curve = []
     while step < args.steps:
         for batch in loader:
-            batch = {k: (v.to(device) if hasattr(v, "to") else v) for k, v in batch.items()}
+            batch = preprocess(dict(batch))
             out_ = policy.forward(batch)
             loss = out_[0] if isinstance(out_, tuple) else out_["loss"]
             loss.backward(); opt.step(); opt.zero_grad()
@@ -191,6 +295,11 @@ def main() -> int:
         "still_falling_at_end": bool(still_falling),
         "last4_val_mm": tail,
         "train_minutes": train_min, "peak_vram_gb": peak, "device": device,
+        # A result with no library version beside it cannot be reproduced or
+        # compared. real31's nine runs recorded twenty fields and not this one.
+        "lerobot_version": _lerobot_version(),
+        "torch_version": torch.__version__,
+        "scored_action_deltas": cfg.action_delta_indices[PRED_START:PRED_STOP],
     }
     (out / f"{args.arm}_seed{args.seed}.json").write_text(json.dumps(result, indent=1))
     print(json.dumps(result, indent=1), flush=True)

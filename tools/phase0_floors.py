@@ -50,15 +50,27 @@ def build(root: Path, repo_id: str):
                           video_backend=working_video_backend())
 
 
-def action_chunks(ds, indices) -> np.ndarray:
-    """(N, horizon, 3) translation chunks, via the dataset's own query path."""
+# WHICH STEPS ARE COMPARED. A floor is only a floor if it is scored on the
+# instants the policy is scored on. `generate_actions` returns the horizon
+# sliced [n_obs_steps - 1 : n_obs_steps - 1 + n_action_steps], which for
+# action_delta_indices [-1, 0, ... 14] is deltas 0 to 7. `analytic_floors.py`
+# scored the floors over all 16 deltas, out to +14, while `train_arm.py`
+# scored the arms over 8. The floors therefore carried the far end of the
+# horizon, where any predictor is worse, and the arms did not: the floors were
+# handicapped and the comparison was never like for like.
+PRED_START, PRED_STOP = 1, 9
+
+
+def action_chunks(ds, indices, sliced: bool = True) -> np.ndarray:
+    """(N, n_action_steps, 3) translation chunks, via the dataset's own query path."""
     ds._ensure_hf_dataset_loaded()
     out = []
     for i in indices:
         item = ds.hf_dataset[int(i)]
         query, _pad = ds._get_query_indices(item["index"].item(),
                                             item["episode_index"].item())
-        out.append(ds._query_hf_dataset(query)[ACTION].numpy()[:, :3])
+        chunk = ds._query_hf_dataset(query)[ACTION].numpy()[:, :3]
+        out.append(chunk[PRED_START:PRED_STOP] if sliced else chunk)
     return np.stack(out)
 
 
@@ -75,7 +87,7 @@ def floors(ds, holdout: list[int]) -> dict:
     train_idx = np.nonzero(~np.isin(epi, holdout))[0]
     test_idx = np.nonzero(np.isin(epi, holdout))[0]
 
-    mean_action = action_chunks(ds, train_idx).reshape(-1, 3).mean(axis=0)
+    mean_action = action_chunks(ds, train_idx, sliced=False).reshape(-1, 3).mean(axis=0)
     truth = action_chunks(ds, test_idx)                       # (N, H, 3)
 
     err_mean = np.linalg.norm(truth - mean_action[None, None, :], axis=-1)
@@ -92,7 +104,8 @@ def floors(ds, holdout: list[int]) -> dict:
             last[n] = action_chunks(ds, [prev])[0, 0]
     err_persist = np.linalg.norm(truth - last[:, None, :], axis=-1)
 
-    out = {"FLOOR_MEAN": stats(err_mean.ravel() * 1000.0, len(test_idx)),
+    out = {"scored_action_deltas": list(range(PRED_START - 1, PRED_STOP - 1)),
+           "FLOOR_MEAN": stats(err_mean.ravel() * 1000.0, len(test_idx)),
            "FLOOR_PERSISTENCE": stats(err_persist.ravel() * 1000.0, len(test_idx)),
            "holdout": [int(h) for h in holdout],
            "mean_action_mm": (mean_action * 1000).tolist(),
@@ -114,14 +127,24 @@ def main() -> int:
                     help="comma separated episode ids. Default: every fifth, "
                          "offset to land on exactly ten")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--full-horizon", action="store_true",
+                    help="score all 16 deltas, as analytic_floors.py did. Only "
+                         "for reproducing its published numbers")
     ap.add_argument("--verify-real31", default=None,
                     help="path to runs/real31full/06_export/lerobot; reproduces "
                          "the published 12.64 / 8.79 / 28.67 on episodes 13,14,15 "
                          "before this tool is trusted on anything else")
     args = ap.parse_args()
 
+    if args.full_horizon:
+        global PRED_START, PRED_STOP
+        PRED_START, PRED_STOP = 0, 16
+
     if args.verify_real31:
         print("--- verification against analytic_floors.py on real31full ---")
+        print("    (over all 16 deltas, which is the window it used)")
+        _keep = (PRED_START, PRED_STOP)
+        PRED_START, PRED_STOP = 0, 16
         ds = build(Path(args.verify_real31).resolve(), "wristview/real31full")
         got = floors(ds, [13, 14, 15])
         want = {"mean": 12.64, "median": 8.79, "p90": 28.67}
@@ -133,6 +156,7 @@ def main() -> int:
             print("  STOPPING. This tool does not reproduce the known answer, so "
                   "its numbers on a new dataset mean nothing.")
             return 1
+        PRED_START, PRED_STOP = _keep
         print()
 
     root = Path(args.dataset).resolve()
