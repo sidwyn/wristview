@@ -362,10 +362,13 @@ estimate:
     # The VERTICAL extent, in metres. The plane solve places the object's
     # centre at `offset + object_height_m / 2`, so this is the one number that
     # moves the object along the viewing ray if it is wrong.
-    # sept02: Sidwyn's cube, measured 75 mm on each side. The 0.070 before
-    # this was real27's matcha carton, inherited rather than measured --
-    # the exact failure the comment above warns about.
-    object_height_m: 0.075
+    # sept02 ships the carton geometry, 60 x 60 x 70 mm. The real cube is
+    # 75 mm on each side. The rendered object is therefore SMALLER than the
+    # one in the ego video. This is deliberate: re-rendering at 75 mm needs a
+    # Stage 3 re-run whose hand output is currently broken, and a smaller
+    # rendered object makes arm B' a worse match to arm C, so any recovery
+    # figure from this data is a LOWER bound. Do not inherit these numbers.
+    object_height_m: 0.070
     # The rendered body as [x, y, z] in the object frame, in metres.
     #
     # z is the vertical one. `plane.object_pose_on_plane` builds the frame as
@@ -375,7 +378,7 @@ estimate:
     #
     # null falls back to a cube of object_height_m, which is right only for a
     # cube. real27's object is a matcha carton, 60 x 60 x 70 mm.
-    object_dimensions_m: [0.075, 0.075, 0.075]
+    object_dimensions_m: [0.060, 0.060, 0.070]
     # Per clip, because one set can hold several objects and different clips
     # manipulate different ones. Session 6 proved the need: with a single
     # prompt the detector locked onto the bin, which nobody ever moved.
@@ -436,8 +439,9 @@ retarget:
     method: contact
     # Half the object's largest dimension. Measured from the segmented object
     # cloud where one exists.
-    # Half the object's largest dimension: 75 mm cube -> 0.0375.
-    object_radius_m: 0.0375
+    # Half the largest dimension OF THE RENDERED body, 0.070, not of the
+    # real 75 mm cube. It must match what produced the data.
+    object_radius_m: 0.035
     contact_margin_m: 0.03
     release_margin_m: 0.05
     # How still the object must sit in the hand frame to count as carried.
@@ -561,4 +565,7 @@ export:
   # Folder holding the REAL wrist frames for arm C, one subfolder per clip,
   # written by tools/extract_wrist_real.py. Required: every episode must carry
   # all three cameras or A', B' and C would read different rows.
-  wrist_real_root: null
+  # A run started without this silently exports ZERO episodes: every clip
+  # logs "no real wrist frames at None" and s06_export returns None for it.
+  # It lived only in a --set override, which is how that happened once.
+  wrist_real_root: runs/sept02_final/wrist_real
