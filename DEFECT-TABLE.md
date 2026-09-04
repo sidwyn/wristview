@@ -11,7 +11,7 @@ naming on its own: the code computed the exact number that described the
 failure, and then no code read it.** Not an approximation of that number, not a
 proxy. The number itself, correct, in memory, discarded.
 
-Rows 7, 9, 10, 11, 12, 15, 40, 43 and 44 are all this. The trainer measured 17.51 dB on its
+Rows 7, 9, 10, 11, 12, 15, 40, 43, 44 and 48 are all this. The trainer measured 17.51 dB on its
 own training views and nothing compared it to anything. The rasteriser counted
 11,076,570 dropped Gaussian-tile pairs, stored the count on the result object as
 `_overflow`, and no caller ever looked. `train_gsplat.py` printed a Gaussian
@@ -152,6 +152,68 @@ the nominal one.
 
 | 43 | `WiLoRHands.process` caught every per-frame exception, logged it at DEBUG, and returned the same empty frame a hand-free image gives | how many frames a hand was DETECTED in | how many frames the detector was ASKED and RAISED in | a torch downgrade made the MPS conv2d path raise on all 291 frames of demo_0; Stage 3 computed `hand detected on 0/291 frames (0%)`, logged it at INFO, and ran on into Stage 4. Ten hours were spent blaming the object dimensions |
 | 44 | `summarise` sets `passed = median <= limit` and writes `p90_px` and `max_px` beside it | whether the TYPICAL frame reprojects | whether ANY frame reprojects badly | `max_px` separates the two runs cleanly and the gate never reads it: on the healthy scan2 run 2 of 60 clips exceed the 25 px limit, worst 28.62; on the run with the broken hand path 56 of 60 exceed it, worst 55.17. Both report `"passed": true` on 60 of 60. The median is 0 of 60 over the limit in BOTH runs, so the statistic the gate does read has no discriminating power at all |
+| 48 | `RunningQuantileStats.update` computes `np.mean(batch**2)` on the raw uint8 frame | the mean of squares, for a variance | the mean of squares of values that fit in the type | 255 squared wraps to 1 mod 256, so the variance comes out negative and `np.sqrt(np.maximum(0, variance))` clamps it to near zero. Every video-channel `std` this dataset carries is 14 to 20 times too small: ego is [0.0171, 0.0127, 0.0111] against a measured true per-pixel [0.242, 0.215, 0.194]. MEAN_STD normalisation therefore handed the encoder values in [-46, +44] instead of [-2, +2], in Phase 1 as well as Phase 1b |
+
+## Row 48, in detail
+
+This one is upstream, in lerobot, and it is the cleanest example in this file
+of the rule at the top of the page: a number was computed, written to disk,
+read by the training code, and never once compared to the thing it claimed to
+describe.
+
+`lerobot/datasets/compute_stats.py`, in `RunningQuantileStats.update`:
+
+    self._mean = np.mean(batch, axis=0)
+    self._mean_of_squares = np.mean(batch**2, axis=0)
+
+`batch` is the raw video frame, dtype uint8. `batch**2` is evaluated IN uint8.
+255 squared is 65025, which wraps to 1. 200 squared is 40000, which wraps to
+64. So the mean of squares is smaller than the square of the mean, the
+variance
+
+    variance = self._mean_of_squares - self._mean**2
+
+comes out negative, and the guard on the next line
+
+    stddev = np.sqrt(np.maximum(0, variance))
+
+turns a negative variance into a std of zero rather than into an error. The
+guard is what makes it silent.
+
+Reproduced in isolation on uniform random uint8 frames whose true per-channel
+std is 73.78:
+
+| input dtype | std returned |
+|---|---|
+| uint8, as lerobot passes it | **0.000** |
+| the same frames upcast to float32 first | 73.781 |
+| true | 73.784 |
+
+The mean is unaffected, because means do not square anything.
+
+On sept02_final the stored ego std is [0.0171, 0.0127, 0.0111] rather than
+exactly zero, because the streaming encoder downsamples before it measures and
+the partial sums do not cancel perfectly. It is still 14 to 20 times too
+small. `NormalizationMode.MEAN_STD` divides by it, so every image the policy
+has ever seen arrived scaled by roughly 15x: a [0,1] pixel maps to about
+[-46, +44] where ImageNet-normalised input sits in about [-2, +2].
+
+**This applied to Phase 1.** A_prime scored 6.69 mm against NULL's 6.63 and the
+conclusion recorded was that the ego camera contributes nothing. That
+conclusion now has a second candidate explanation which has nothing to do with
+the camera or the encoder: the images were out of range from the first forward
+pass. Phase 1b fixes the normalisation, so its arms are the first to see
+correctly scaled pixels at all.
+
+The fix used here overrides the image entry in `stats` with ImageNet mean and
+std before the processors are built. It is what pretrained weights expect, and
+this dataset's TRUE per-pixel std of [0.242, 0.215, 0.194] is close enough to
+ImageNet's [0.229, 0.224, 0.225] that the same override is also approximately
+right for a scratch encoder.
+
+What would have caught it: any assertion that a normalised batch has
+approximately zero mean and unit variance. That check now runs before every
+Phase 1b run and refuses to train if it fails.
 
 ## Rows 43 and 44, in detail
 
