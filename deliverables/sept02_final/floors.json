@@ -1,0 +1,44 @@
+{
+ "scored_action_deltas": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7
+ ],
+ "FLOOR_MEAN": {
+  "action_error_mm_mean": 6.139698505401611,
+  "action_error_mm_median": 4.411829948425293,
+  "action_error_mm_p90": 12.006804466247559,
+  "rows": 1860
+ },
+ "FLOOR_PERSISTENCE": {
+  "action_error_mm_mean": 3.7201540665883615,
+  "action_error_mm_median": 2.148917750795363,
+  "action_error_mm_p90": 8.155151007433753,
+  "rows": 1860
+ },
+ "holdout": [
+  3,
+  8,
+  13,
+  18,
+  23,
+  28,
+  33,
+  38,
+  43,
+  48
+ ],
+ "mean_action_mm": [
+  1.4498438835144043,
+  0.008563324809074402,
+  -0.2649088203907013
+ ],
+ "train_rows": 7552,
+ "test_rows": 1860,
+ "episodes_total": 53
+}
