@@ -28,7 +28,7 @@ and it now does not.
 """
 from __future__ import annotations
 
-import argparse, json, os, time
+import argparse, json, math, os, time
 from pathlib import Path
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -239,6 +239,14 @@ def main() -> int:
                     help="build everything, run the three checks and one training "
                          "step, then stop. Proves a configuration on a laptop "
                          "before it is paid for on a GPU.")
+    ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument("--lr-schedule", default="constant",
+                    choices=["constant", "cosine"],
+                    help="cosine: linear warmup to --lr over --warmup-steps, then "
+                         "cosine decay to 0 at --steps. This is lerobot's own "
+                         "diffusion default shape. `constant` is the default so "
+                         "the 4 September runs stay reproducible.")
+    ap.add_argument("--warmup-steps", type=int, default=500)
     ap.add_argument("--down-dims", default=None,
                     help="U-Net channel widths, e.g. 128,256,512. The default "
                          "512,1024,2048 is ~250 M parameters, which is where "
@@ -405,7 +413,24 @@ def main() -> int:
             _freeze_batchnorm(policy.diffusion.rgb_encoder.backbone)
 
     set_train()
-    opt = torch.optim.Adam([p for p in policy.parameters() if p.requires_grad], lr=1e-4)
+    opt = torch.optim.Adam([p for p in policy.parameters() if p.requires_grad],
+                           lr=args.lr)
+
+    # A constant 1e-4 never lets the validation curve settle, so the last-6
+    # score carries learning-rate jitter rather than the model's final quality.
+    # On 4 September every arm was still bouncing 0.8 to 1.1 mm between
+    # adjacent checks at the cutoff, which is five to ten times the difference
+    # between the arms.
+    def lr_at(step: int) -> float:
+        """Multiplier on `args.lr` at a given step. Warmup then cosine to 0."""
+        if args.lr_schedule == "constant":
+            return 1.0
+        if step < args.warmup_steps:
+            return step / max(args.warmup_steps, 1)
+        progress = (step - args.warmup_steps) / max(args.steps - args.warmup_steps, 1)
+        return 0.5 * (1.0 + math.cos(math.pi * min(progress, 1.0)))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(opt, lr_at)
     loader = torch.utils.data.DataLoader(
         torch.utils.data.Subset(full, train_idx.tolist()),
         batch_size=args.batch_size, shuffle=True, num_workers=2, drop_last=True,
@@ -510,6 +535,15 @@ def main() -> int:
               f"{grads} encoder tensors received a non-zero gradient "
               f"({'expected 0 when frozen' if args.freeze_encoder else 'expected > 0'})",
               flush=True)
+        # The schedule the run will actually follow, read off the same function
+        # the optimiser uses rather than described. A schedule nobody printed
+        # is a schedule nobody checked.
+        trace = [(st, args.lr * lr_at(st)) for st in (0, 250, 500, 5000, 9999)
+                 if st <= args.steps or args.steps >= 10000]
+        print(f"  lr schedule '{args.lr_schedule}', base {args.lr:g}, "
+              f"warmup {args.warmup_steps}, steps {args.steps}", flush=True)
+        for st, v in trace:
+            print(f"    step {st:5d}  lr {v:.3e}", flush=True)
         return 0
 
     started = time.time(); step = 0; losses = []; curve = []
@@ -527,7 +561,7 @@ def main() -> int:
             batch = preprocess(dict(batch))
             out_ = policy.forward(batch)
             loss = out_[0] if isinstance(out_, tuple) else out_["loss"]
-            loss.backward(); opt.step(); opt.zero_grad()
+            loss.backward(); opt.step(); opt.zero_grad(); scheduler.step()
             losses.append(float(loss)); step += 1
             if step % args.eval_every == 0 or step >= args.steps:
                 e = score()
@@ -567,6 +601,10 @@ def main() -> int:
         "lerobot_version": _lerobot_version(),
         "torch_version": torch.__version__,
         "scored_action_deltas": cfg.action_delta_indices[PRED_START:PRED_STOP],
+        "lr": args.lr,
+        "lr_schedule": args.lr_schedule,
+        "warmup_steps": args.warmup_steps,
+        "eval_every": args.eval_every,
         "backbone_weights": args.backbone_weights,
         "use_group_norm": cfg.use_group_norm,
         "batchnorm_modules_frozen": bn_frozen,
