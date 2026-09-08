@@ -1,0 +1,243 @@
+{
+ "arm": "A_prime",
+ "seed": 1,
+ "steps": 10000,
+ "freeze_encoder": false,
+ "down_dims": [
+  512,
+  1024,
+  2048
+ ],
+ "trainable_params_m": 263.013671,
+ "frozen_params_m": 0.0,
+ "batch_size": 32,
+ "holdout": [
+  3,
+  8,
+  13,
+  18,
+  23,
+  28,
+  33,
+  38,
+  43,
+  48
+ ],
+ "cameras": [
+  "observation.images.ego"
+ ],
+ "train_rows": 7552,
+ "test_rows": 1860,
+ "action_error_mm_mean": 3.4683878421783447,
+ "action_error_mm_median": 2.388808250427246,
+ "action_error_mm_p90": 6.851845741271973,
+ "final_train_loss": 0.0240609044842422,
+ "val_curve": [
+  {
+   "step": 500,
+   "val_mm_mean": 8.152812957763672,
+   "val_mm_median": 6.681112289428711,
+   "train_loss": 0.26164150827005506
+  },
+  {
+   "step": 1000,
+   "val_mm_mean": 6.975743293762207,
+   "val_mm_median": 5.559918403625488,
+   "train_loss": 0.054220490373671056
+  },
+  {
+   "step": 1500,
+   "val_mm_mean": 6.47635555267334,
+   "val_mm_median": 4.698768615722656,
+   "train_loss": 0.04449471518024802
+  },
+  {
+   "step": 2000,
+   "val_mm_mean": 5.672396659851074,
+   "val_mm_median": 4.0384674072265625,
+   "train_loss": 0.04088614861853421
+  },
+  {
+   "step": 2500,
+   "val_mm_mean": 6.251491069793701,
+   "val_mm_median": 4.390222072601318,
+   "train_loss": 0.03962147022970021
+  },
+  {
+   "step": 3000,
+   "val_mm_mean": 5.73130464553833,
+   "val_mm_median": 4.135751724243164,
+   "train_loss": 0.036677789172157645
+  },
+  {
+   "step": 3500,
+   "val_mm_mean": 5.296395301818848,
+   "val_mm_median": 3.655350685119629,
+   "train_loss": 0.035030446795746684
+  },
+  {
+   "step": 4000,
+   "val_mm_mean": 4.889472007751465,
+   "val_mm_median": 3.3818414211273193,
+   "train_loss": 0.03372050887160003
+  },
+  {
+   "step": 4500,
+   "val_mm_mean": 4.761873245239258,
+   "val_mm_median": 3.215679168701172,
+   "train_loss": 0.03366945884935558
+  },
+  {
+   "step": 5000,
+   "val_mm_mean": 4.330100059509277,
+   "val_mm_median": 2.8631205558776855,
+   "train_loss": 0.03199759815633297
+  },
+  {
+   "step": 5500,
+   "val_mm_mean": 4.602056980133057,
+   "val_mm_median": 3.09791898727417,
+   "train_loss": 0.030496302432380617
+  },
+  {
+   "step": 6000,
+   "val_mm_mean": 4.151969909667969,
+   "val_mm_median": 2.8712215423583984,
+   "train_loss": 0.029207081945613028
+  },
+  {
+   "step": 6500,
+   "val_mm_mean": 4.395468235015869,
+   "val_mm_median": 2.9677183628082275,
+   "train_loss": 0.028292611548677085
+  },
+  {
+   "step": 7000,
+   "val_mm_mean": 3.8717494010925293,
+   "val_mm_median": 2.6753196716308594,
+   "train_loss": 0.027566644576378165
+  },
+  {
+   "step": 7500,
+   "val_mm_mean": 3.795158624649048,
+   "val_mm_median": 2.5236597061157227,
+   "train_loss": 0.025884502542205156
+  },
+  {
+   "step": 8000,
+   "val_mm_mean": 3.7867908477783203,
+   "val_mm_median": 2.547098159790039,
+   "train_loss": 0.025408765128813685
+  },
+  {
+   "step": 8500,
+   "val_mm_mean": 3.623560667037964,
+   "val_mm_median": 2.48111629486084,
+   "train_loss": 0.02462625361047685
+  },
+  {
+   "step": 9000,
+   "val_mm_mean": 3.580946445465088,
+   "val_mm_median": 2.392425537109375,
+   "train_loss": 0.02315370899811387
+  },
+  {
+   "step": 9500,
+   "val_mm_mean": 3.5070369243621826,
+   "val_mm_median": 2.3929693698883057,
+   "train_loss": 0.022336515849921853
+  },
+  {
+   "step": 10000,
+   "val_mm_mean": 3.526494264602661,
+   "val_mm_median": 2.360346555709839,
+   "train_loss": 0.023242310121189803
+  }
+ ],
+ "still_falling_at_end": false,
+ "last4_val_mm": [
+  3.623560667037964,
+  3.580946445465088,
+  3.5070369243621826,
+  3.526494264602661
+ ],
+ "train_minutes": 63.12293365399043,
+ "peak_vram_gb": 11.031473152,
+ "device": "cuda",
+ "lerobot_version": "0.4.4",
+ "torch_version": "2.10.0+cu128",
+ "scored_action_deltas": [
+  0,
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7
+ ],
+ "lr": 0.0001,
+ "lr_schedule": "cosine",
+ "warmup_steps": 500,
+ "eval_every": 500,
+ "backbone_weights": "r3m",
+ "use_group_norm": false,
+ "batchnorm_modules_frozen": 20,
+ "r3m_load": {
+  "checkpoint": "/root/payload/r3m18.bin",
+  "convnet_keys": 120,
+  "backbone_tensors": 120,
+  "missing_keys": [
+   "fc.weight",
+   "fc.bias"
+  ],
+  "unexpected_keys": [],
+  "unexpected_missing": [],
+  "differs_from_fresh_init": true,
+  "conv1_absmean_loaded": 0.10799366235733032,
+  "conv1_absmean_fresh": 0.020307715982198715
+ },
+ "image_stats_override": {
+  "dataset_std_replaced": {
+   "observation.images.ego": [
+    0.2413,
+    0.2149,
+    0.1937
+   ]
+  },
+  "imagenet_mean": [
+   0.485,
+   0.456,
+   0.406
+  ],
+  "imagenet_std": [
+   0.229,
+   0.224,
+   0.225
+  ]
+ },
+ "normalised_batch_check": {
+  "observation.images.ego": {
+   "per_channel_mean": [
+    0.096,
+    0.257,
+    0.351
+   ],
+   "per_channel_std": [
+    1.056,
+    0.966,
+    0.839
+   ]
+  }
+ },
+ "pod_id": "j6j11un2uu644o",
+ "hardware": {
+  "torch_version": "2.10.0+cu128",
+  "torchvision_version": "0.25.0+cu128",
+  "gpu_name": "NVIDIA GeForce RTX 4090",
+  "cuda_version": "12.8",
+  "cudnn_version": 91002,
+  "driver_version": "580.167.08"
+ },
+ "run_tag": "A_prime_r3m_finetuned"
+}
