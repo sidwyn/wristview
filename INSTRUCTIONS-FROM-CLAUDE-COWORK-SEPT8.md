@@ -1031,3 +1031,112 @@ The first thing that phase should do is measure peak VRAM for one step on one
 pod before committing to five.
 
 -- CC
+
+## 2026-09-09T08:26Z CC: Phase 4 status
+
+Elapsed 277 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  DELETED  2.87
+seed 5  bymtf6icbtbqgb  277m  $3.43  C_ds  step 8000 loss 0.0243 val 3.83 mm
+seed 1  c5elostyg3fpnq  277m  $3.43  C_ds  step 8000 loss 0.0247 val 3.92 mm
+seed 3  vgi3urdwduf1jd  277m  $3.43  C_ds  step 8500 loss 0.0231 val 3.85 mm
+seed 4  0moujk3121pyet  277m  $3.43  C_ds  step 6500 loss 0.0273 val 4.29 mm
+```
+
+## 2026-09-09T08:48Z CC: Phase 4 pod deleted, seed 3
+
+`vgi3urdwduf1jd`. seed finished, 2 of 3 results local. Cost from CREATION about $3.70.
+
+## 2026-09-09T08:53Z CC: Phase 4 pod deleted, seed 1
+
+`c5elostyg3fpnq`. seed finished, 2 of 3 results local. Cost from CREATION about $3.76.
+
+## 2026-09-09T08:56Z CC: Phase 4 pod deleted, seed 5
+
+`bymtf6icbtbqgb`. seed finished, 2 of 3 results local. Cost from CREATION about $3.80.
+
+## 2026-09-09T08:56Z CC: Phase 4 status
+
+Elapsed 308 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  DELETED  2.87
+seed 5  bymtf6icbtbqgb  DELETED  3.80
+seed 1  c5elostyg3fpnq  DELETED  3.76
+seed 3  vgi3urdwduf1jd  DELETED  3.70
+seed 4  0moujk3121pyet  308m  $3.80  C_ds  step 8500 loss 0.0233 val 3.81 mm
+```
+
+## 2026-09-09T09:19Z CC: Phase 4 pod deleted, seed 4
+
+`0moujk3121pyet`. seed finished, 2 of 3 results local. Cost from CREATION about $4.08.
+
+## 2026-09-09T09:25Z CC: PHASE 4 COMPLETE. Tables and decision words first.
+
+**All 5 pods deleted. `runpodctl pod list` returns `[]`. Nothing billing.
+$18.21 of the $25 cap. Finished 09:19:24Z, inside the 09:48Z wall clock.**
+
+    seed 2 $2.87   seed 3 $3.70   seed 1 $3.76   seed 5 $3.80   seed 4 $4.08
+
+    arm             s1      s2      s3      s4      s5    mean      sd
+    B_ds          3.84    3.84    3.86    3.84    3.79    3.83   0.027
+    C_ds          3.75    3.74    3.84    3.77    3.74    3.77   0.042
+
+    pair              s1      s2      s3      s4      s5    mean     SE    2xSE  signs  verdict
+    C_ds - B_ds   -0.086  -0.097  -0.019  -0.069  -0.050  -0.064  0.014   0.028   5/5   ESTABLISHED
+    B_ds - B_p3   -0.062  -0.022  -0.006  +0.034  +0.034  -0.004  0.018   0.036   3/5   NOT ESTABLISHED
+    C_ds - C_p3   -0.020  +0.064  +0.119  +0.066  +0.129  +0.072  0.027   0.053   4/5   ESTABLISHED
+
+Last two rows seed-matched, NOT hardware-matched. Phase 3 reference:
+`C - B_prime = -0.140`, 5/5, ESTABLISHED.
+
+### The branch: the third one. Neither paragraph.
+
+`C_ds - B_ds` is ESTABLISHED at -0.064, so paragraph B's "still established
+near -0.14" does not hold. `B_ds - B_p3` is NOT established, so paragraph A
+does not hold either.
+
+**One plain sentence, as the third branch requires: normalising each wrist
+channel by its own statistics halved the real-versus-rendered gap, from
+-0.140 mm to -0.064 mm, and the gap remains established on 5 of 5 seeds, so
+the measurement did not resolve whether colour is the cause.**
+
+**I have not touched the essay.** Writing a third paragraph now would be one
+composed after seeing the numbers, which is what the two pre-written ones
+exist to prevent.
+
+### The part Sidwyn needs before he decides the paragraph
+
+The gap did not halve because the render improved.
+
+                        B       C      gap
+    Phase 3 (imagenet)  3.84    3.70   -0.140
+    Phase 4 (dataset)   3.83    3.77   -0.064
+
+    the render moved   -0.004 mm   NOT ESTABLISHED
+    the real camera    +0.072 mm   ESTABLISHED, and worse
+
+The render was given exactly the normalisation the essay's guess says it
+needed, and did not improve. The gap closed because the same change hurt the
+REAL camera. **The published guess was tested and did not survive**, which is
+a stronger statement than "did not resolve" and is why the plain sentence
+above is narrower than what these numbers look like. The rule is there to be
+applied.
+
+### 4b: no result. CUDA OOM, not the cap.
+
+A_vip fails 13 seconds in on every pod, 23.42 GiB of a 4090's 23.53, at batch
+32. Every VIP assertion passed first. The CPU dry run at batch 4 could not
+have caught it, and no assertion list included peak VRAM at the real batch on
+the real card. No run reached step 1, so there is no partial curve: a failure,
+not a truncation.
+
+A future phase wanting 4b must first decide batch 16 with a matching R3M
+re-run, or gradient accumulation to hold the effective batch at 32.
+
+### Written up
+
+`deliverables/sept02_final/PHASE4-RESULT.md`.
+
+-- CC

@@ -65,3 +65,8 @@ is EXITED and kept only for its disk. **Stop, never remove or terminate.**
 | 2026-09-09 03:48 | **CREATE POD** | Phase 4 seed 3, approved in CC-PHASE-4.md: B_ds then C_ds then A_vip | Pod `vgi3urdwduf1jd`, RTX 4090, $0.74/hr, 50 GB disk. Payload sha256 3479c6d8bd..., VIP weights sha256 e84b1ff024... 6-hour cap ends 2026-09-09T09:48:07Z, enforced by night-logs/p4/conductor.sh running detached. |
 | 2026-09-09 03:48 | **CREATE POD** | Phase 4 seed 4, approved in CC-PHASE-4.md: B_ds then C_ds then A_vip | Pod `0moujk3121pyet`, RTX 4090, $0.74/hr, 50 GB disk. Payload sha256 3479c6d8bd..., VIP weights sha256 e84b1ff024... 6-hour cap ends 2026-09-09T09:48:07Z, enforced by night-logs/p4/conductor.sh running detached. |
 | 2026-09-09 03:48 | **CREATE POD** | Phase 4 seed 5, approved in CC-PHASE-4.md: B_ds then C_ds then A_vip | Pod `bymtf6icbtbqgb`, RTX 4090, $0.74/hr, 50 GB disk. Payload sha256 3479c6d8bd..., VIP weights sha256 e84b1ff024... 6-hour cap ends 2026-09-09T09:48:07Z, enforced by night-logs/p4/conductor.sh running detached. |
+| 2026-09-09 07:40 | **POD DELETED** | Phase 4 seed 2, seed finished, 2 of 3 results local | Pod `lhyznuksvkr4o6`. About $2.87 from CREATION. |
+| 2026-09-09 08:48 | **POD DELETED** | Phase 4 seed 3, seed finished, 2 of 3 results local | Pod `vgi3urdwduf1jd`. About $3.70 from CREATION. |
+| 2026-09-09 08:53 | **POD DELETED** | Phase 4 seed 1, seed finished, 2 of 3 results local | Pod `c5elostyg3fpnq`. About $3.76 from CREATION. |
+| 2026-09-09 08:56 | **POD DELETED** | Phase 4 seed 5, seed finished, 2 of 3 results local | Pod `bymtf6icbtbqgb`. About $3.80 from CREATION. |
+| 2026-09-09 09:19 | **POD DELETED** | Phase 4 seed 4, seed finished, 2 of 3 results local | Pod `0moujk3121pyet`. About $4.08 from CREATION. |
