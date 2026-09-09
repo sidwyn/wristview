@@ -810,3 +810,79 @@ essay paragraph are missing in the morning, the result JSONs are in
 that shape.
 
 -- CC
+
+## 2026-09-09T04:05Z CC: 10-HOUR CAP. All pods deleted.
+
+## 2026-09-09T04:20Z CC: Phase 4 status
+
+Elapsed 31 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  31m  $0.39  B_ds  step 2500 loss 0.0380 val 5.83 mm
+seed 5  bymtf6icbtbqgb  31m  $0.39  B_ds  step 1500 loss 0.0448 val 6.42 mm
+seed 1  c5elostyg3fpnq  31m  $0.39  B_ds  step 1500 loss 0.0444 val 6.42 mm
+seed 3  vgi3urdwduf1jd  31m  $0.39  B_ds  step 1500 loss 0.0447 val 6.22 mm
+seed 4  0moujk3121pyet  31m  $0.39  B_ds  step 1000 loss 0.0532 val 6.93 mm
+```
+
+## 2026-09-09T04:30Z CC: the time forecast passes the cap. 4b will not finish.
+
+Reporting this now, not at 09:48, because the plan says to write the moment
+anything is off and keep the healthy pods running. **Nothing has been changed
+and nothing has been stopped.**
+
+### The measurement
+
+B_ds is running at 11.5 to 17.4 min per 1000 steps. Phase 3's B_prime ran at
+about 8.6. These pods are slower, and they vary more between pods than Phase
+3's did.
+
+    seed   min/1k    B_ds ends   C_ds ends   A_vip would end
+    1        14.8      06:18Z      08:47Z         12:07Z
+    2        11.5      05:45Z      07:40Z         10:15Z
+    3        14.6      06:15Z      08:41Z         11:57Z
+    4        14.8      06:18Z      08:46Z         12:05Z
+    5        17.4      06:44Z      09:38Z         13:32Z
+
+    CAP 09:48Z
+
+### What this means
+
+**4a completes on all five seeds.** B_ds and C_ds both land before the cap.
+Seed 5 finishes C_ds at 09:38Z, ten minutes inside it, so it is the one to
+watch.
+
+**4b does not complete on any seed.** A_vip is third in each queue and would
+need 155 to 235 min after C_ds ends. It would reach roughly 8,200 steps on
+seed 2 and 425 on seed 5. Under the plan's own rule an incomplete run has no
+score and does not enter the table, so **4b returns nothing**.
+
+### What I am not doing about it
+
+Reordering the queue to put A_vip first would save 4b and risk 4a. The plan
+fixes the order as B_ds, C_ds, A_vip, and 4a is the one that feeds the essay
+paragraph. Changing the order is a parameter change I am not authorised to
+make, and it would trade the answerable question for the optional one.
+
+Extending the cap is also not mine. So the runs continue as specified and 4b
+will be reported as INCOMPLETE.
+
+**If Sidwyn wants 4b, the cheapest route is a separate phase: five pods,
+A_vip only, about 2.6 h and $10.** That is a decision for him, not something
+to fix at 04:30 by rewriting a running plan.
+
+### Money
+
+Every pod now runs to the cap, because the conductor deletes a pod when its
+THIRD result lands and the third will not land. Five pods for the full six
+hours is **$22.20 of the $25 cap**. Inside it, with $2.80 of margin, and no
+action needed.
+
+### One fault found and fixed at 04:00Z
+
+Seed 4's setup stalled after it got an SSH endpoint: no payload, no run, pod
+billing and idle. The 20-minute health check caught it, I relaunched the
+setup, and seed 4 is now training. It started about 12 minutes behind the
+others, which is inside its own projection above.
+
+-- CC
