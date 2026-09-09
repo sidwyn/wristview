@@ -576,3 +576,237 @@ false positive on the arm that matters most.
 Stopping here. No sixth seed, no longer runs, no parameter changes.
 
 -- CC
+
+## 2026-09-08T22:49Z CC: 30-minute status
+
+Elapsed 285 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-08T23:19Z CC: 30-minute status
+
+Elapsed 315 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-08T23:49Z CC: 30-minute status
+
+Elapsed 345 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T00:19Z CC: 30-minute status
+
+Elapsed 375 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T00:49Z CC: 30-minute status
+
+Elapsed 405 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T01:20Z CC: 30-minute status
+
+Elapsed 435 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T01:50Z CC: 30-minute status
+
+Elapsed 465 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T02:20Z CC: 30-minute status
+
+Elapsed 495 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T02:50Z CC: 30-minute status
+
+Elapsed 525 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T03:20Z CC: 30-minute status
+
+Elapsed 555 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+
+## 2026-09-09T03:49Z CC: Phase 4 status
+
+Elapsed 1 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  1m  $0.02  starting  no checkpoint yet
+seed 4  0moujk3121pyet  1m  $0.02  starting  no checkpoint yet
+seed 5  bymtf6icbtbqgb  1m  $0.02  starting  no checkpoint yet
+
+## 2026-09-09T03:50Z CC: 30-minute status
+
+Elapsed 585 min of 600. Cap at 2026-09-09T04:04Z.
+
+```
+seed 2  6bwrgu7km32dw3  DELETED  seed finished, 3 of 3 results on local disk
+seed 4  ea43sk997b3osi  DELETED  seed finished, 3 of 3 results on local disk
+seed 3  5n6ryzdwqic0jc  DELETED  seed finished, 3 of 3 results on local disk
+seed 1  j6j11un2uu644o  DELETED  seed finished, 3 of 3 results on local disk
+seed 5  qud4o9xbt8mp8d  DELETED  seed finished, 3 of 3 results on local disk
+```
+seed 1  c5elostyg3fpnq  1m  $0.02  starting  no checkpoint yet
+seed 3  vgi3urdwduf1jd  1m  $0.02  starting  no checkpoint yet
+```
+
+## 2026-09-09T03:55Z CC: PHASE 4 STARTED. Read this first if you arrive in the morning.
+
+**Clock started 2026-09-09T03:48:07Z. The 6-hour cap ends 2026-09-09T09:48:07Z.**
+Money cap $25. Five pods, one seed each, running B_ds then C_ds then A_vip.
+
+### EMERGENCY: delete every Phase 4 pod
+
+If the conductor and CC are both gone, paste this into a terminal:
+
+    runpodctl remove pod c5elostyg3fpnq
+    runpodctl remove pod lhyznuksvkr4o6
+    runpodctl remove pod vgi3urdwduf1jd
+    runpodctl remove pod 0moujk3121pyet
+    runpodctl remove pod bymtf6icbtbqgb
+    runpodctl pod list
+
+The last line must print `[]`. Five pods at $0.74/hr is $3.70 an hour if they
+are left up.
+
+    seed 1  c5elostyg3fpnq      seed 2  lhyznuksvkr4o6
+    seed 3  vgi3urdwduf1jd      seed 4  0moujk3121pyet
+    seed 5  bymtf6icbtbqgb
+
+### Hashes
+
+    payload p4.tar.gz   388,915,085 bytes
+                        sha256 3479c6d8bdeaae20cceb307bd2566d4c8858ec32e2f198232659c1f8e4284ee4
+    VIP model.pt        102,748,929 bytes
+                        sha256 e84b1ff024a4e9d9925833cf71f866d1e8d888926c757136ab65ead75edc342b
+                        from https://pytorch.s3.amazonaws.com/models/rl/vip/model.pt
+
+Each pod verifies the payload hash before unpacking and refuses to run on a
+mismatch.
+
+### 4a dry run: --image-stats dataset, B_prime, on CPU
+
+    image stats mode 'dataset'. applied
+      ego    mean [0.5274, 0.5356, 0.5046]  std [0.2413, 0.2149, 0.1937]
+      wrist  mean [0.3132, 0.4228, 0.4398]  std [0.2408, 0.3160, 0.3084]
+
+    normalised batch reaching the backbone:
+      ego    mean [-0.161, -0.133, -0.128]  std [0.997, 0.997, 0.998]
+      wrist  mean [-0.429, -0.361, -0.237]  std [0.797, 0.825, 0.918]
+    normalisation check PASSED
+
+Both channels now near zero mean and unit variance. Under the ImageNet
+override the wrist channel read mean [-1.201, -0.658, -0.175]. The applied
+values match the patched stats.json to three decimals. The flag is wired.
+
+### 4b dry run: --backbone-weights vip, A_prime, on CPU
+
+    VIP load VERIFIED: 318 tensors, no unexpected or missing keys outside fc,
+                       conv1 differs from fresh init
+    arch resnet50, convnet_keys 318
+    froze running statistics on 53 BatchNorm2d modules
+    parameters: 275.39 M trainable, 0.00 M frozen
+    normalised batch, ego: mean [0.015, 0.227, 0.328] std [1.05, 0.956, 0.859]
+    normalisation check PASSED
+    DRY RUN ok: 163 encoder tensors received a non-zero gradient
+
+    feature map width, measured directly:
+      resnet18 (1, 512, 11, 19)  ->  512 channels
+      resnet50 (1, 2048, 11, 19) -> 2048 channels
+
+53 BatchNorm modules as the plan predicted for resnet50, and the 2048-channel
+map confirmed.
+
+**One thing the plan did not anticipate.** The VIP checkpoint ships an `fc`
+of shape [1024, 2048], its embedding head, which fails to load against
+torchvision's 1000-class default. lerobot builds its backbone from
+`children()[:-2]` and discards `fc`, so it never reaches the model. Both
+loaders now drop `fc` before loading. R3M simply omits it; VIP ships a
+reshaped one. 320 checkpoint tensors minus 2 gives the 318 loaded.
+
+### The conductor is detached and does not need CC
+
+`night-logs/p4/conductor.sh`, log at
+`runs/sept02_final/07_train/phase4_conductor.log`. Verified detached: its
+launching shell exited and it kept running. It pulls each result as an arm
+finishes, deletes each pod when its third result is on local disk, writes a
+GPU-LOG DELETE row and a channel entry per deletion, and enforces the 6-hour
+cap by itself.
+
+**CC may run out of session usage during this phase.** If the analysis and the
+essay paragraph are missing in the morning, the result JSONs are in
+`runs/sept02_final/07_train/results_p4/` and `tools/phase3_report.py` reads
+that shape.
+
+-- CC
