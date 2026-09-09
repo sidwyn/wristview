@@ -886,3 +886,148 @@ setup, and seed 4 is now training. It started about 12 minutes behind the
 others, which is inside its own projection above.
 
 -- CC
+
+## 2026-09-09T04:51Z CC: Phase 4 status
+
+Elapsed 63 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  63m  $0.78  B_ds  step 5000 loss 0.0316 val 4.66 mm
+seed 5  bymtf6icbtbqgb  62m  $0.78  B_ds  step 3500 loss 0.0350 val 5.16 mm
+seed 1  c5elostyg3fpnq  63m  $0.78  B_ds  step 4000 loss 0.0334 val 5.02 mm
+seed 3  vgi3urdwduf1jd  62m  $0.78  B_ds  step 4000 loss 0.0333 val 4.91 mm
+seed 4  0moujk3121pyet  62m  $0.78  B_ds  step 3000 loss 0.0359 val 5.08 mm
+```
+
+## 2026-09-09T05:21Z CC: Phase 4 status
+
+Elapsed 93 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  93m  $1.15  B_ds  step 8000 loss 0.0254 val 3.97 mm
+seed 5  bymtf6icbtbqgb  93m  $1.15  B_ds  step 5500 loss 0.0308 val 4.57 mm
+seed 1  c5elostyg3fpnq  93m  $1.15  B_ds  step 6000 loss 0.0289 val 4.56 mm
+seed 3  vgi3urdwduf1jd  93m  $1.15  B_ds  step 6000 loss 0.0293 val 4.29 mm
+seed 4  0moujk3121pyet  93m  $1.15  B_ds  step 5000 loss 0.0306 val 4.78 mm
+```
+
+## 2026-09-09T05:52Z CC: Phase 4 status
+
+Elapsed 123 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  123m  $1.53  C_ds  step 500 loss 0.2581 val 9.50 mm
+seed 5  bymtf6icbtbqgb  123m  $1.53  B_ds  step 7500 loss 0.0259 val 3.95 mm
+seed 1  c5elostyg3fpnq  123m  $1.53  B_ds  step 8000 loss 0.0250 val 4.02 mm
+seed 3  vgi3urdwduf1jd  123m  $1.53  B_ds  step 8000 loss 0.0240 val 4.04 mm
+seed 4  0moujk3121pyet  123m  $1.53  B_ds  step 7000 loss 0.0266 val 4.25 mm
+```
+
+## 2026-09-09T06:22Z CC: Phase 4 status
+
+Elapsed 154 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  154m  $1.90  C_ds  step 3000 loss 0.0365 val 5.20 mm
+seed 5  bymtf6icbtbqgb  154m  $1.90  B_ds  step 9500 loss 0.0219 val 3.69 mm
+seed 1  c5elostyg3fpnq  154m  $1.90  C_ds  step 10000 loss 0.0227 val 3.70 mm
+seed 3  vgi3urdwduf1jd  154m  $1.90  C_ds  step 10000 loss 0.0216 val 3.82 mm
+seed 4  0moujk3121pyet  154m  $1.90  B_ds  step 9000 loss 0.0222 val 3.80 mm
+```
+
+## 2026-09-09T06:53Z CC: Phase 4 status
+
+Elapsed 185 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  185m  $2.28  C_ds  step 6000 loss 0.0291 val 4.12 mm
+seed 5  bymtf6icbtbqgb  185m  $2.28  C_ds  step 1500 loss 0.0447 val 5.99 mm
+seed 1  c5elostyg3fpnq  185m  $2.28  C_ds  step 2000 loss 0.0406 val 5.67 mm
+seed 3  vgi3urdwduf1jd  185m  $2.28  C_ds  step 2000 loss 0.0403 val 5.41 mm
+seed 4  0moujk3121pyet  185m  $2.28  C_ds  step 500 loss 0.2596 val 9.15 mm
+```
+
+## 2026-09-09T07:24Z CC: Phase 4 status
+
+Elapsed 215 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  215m  $2.66  C_ds  step 8500 loss 0.0238 val 3.72 mm
+seed 5  bymtf6icbtbqgb  215m  $2.66  C_ds  step 3500 loss 0.0350 val 5.15 mm
+seed 1  c5elostyg3fpnq  215m  $2.66  C_ds  step 4000 loss 0.0334 val 4.98 mm
+seed 3  vgi3urdwduf1jd  215m  $2.66  C_ds  step 4000 loss 0.0334 val 4.73 mm
+seed 4  0moujk3121pyet  215m  $2.66  C_ds  step 2500 loss 0.0379 val 5.06 mm
+```
+
+## 2026-09-09T07:40Z CC: Phase 4 pod deleted, seed 2
+
+`lhyznuksvkr4o6`. seed finished, 2 of 3 results local. Cost from CREATION about $2.87.
+
+## 2026-09-09T07:55Z CC: Phase 4 status
+
+Elapsed 246 min of 360. Cap 2026-09-09T09:48Z.
+
+```
+seed 2  lhyznuksvkr4o6  DELETED  2.87
+seed 5  bymtf6icbtbqgb  246m  $3.04  C_ds  step 6000 loss 0.0284 val 4.20 mm
+seed 1  c5elostyg3fpnq  246m  $3.04  C_ds  step 6000 loss 0.0289 val 4.32 mm
+seed 3  vgi3urdwduf1jd  246m  $3.04  C_ds  step 6000 loss 0.0293 val 4.09 mm
+seed 4  0moujk3121pyet  246m  $3.04  C_ds  step 4500 loss 0.0332 val 4.43 mm
+```
+
+## 2026-09-09T08:15Z CC: 4b is dead. CUDA out of memory, not the time cap.
+
+Correcting my 04:30Z entry. I said A_vip would be cut by the 6-hour cap.
+It is not reaching the cap. **It fails 13 seconds after it starts, on every
+pod, with CUDA out of memory.**
+
+    07:40:41 === seed 2 A_vip starting ===
+      VIP load VERIFIED: 318 tensors, no unexpected or missing keys outside fc
+      froze running statistics on 53 BatchNorm2d modules
+      normalisation check PASSED
+    torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 106.00 MiB.
+      GPU 0 has a total capacity of 23.53 GiB of which 103.69 MiB is free.
+      This process has 23.42 GiB in use.
+    07:40:54 === seed 2 A_vip FAILED exit 1, no result ===
+
+Every VIP assertion the plan asked for passed. The weights load, the
+architecture is right, the feature map is 2048 channels, the gradients flow.
+Then the first forward pass at batch 32 does not fit on a 4090. Phase 3's
+resnet18 arms peaked near 13 GiB. resnet50 with a 2048-channel conditioning
+vector needs more than 23.5.
+
+### Why the dry run did not catch it
+
+The dry run ran on CPU at batch 4, because that is what a laptop can do. It
+proved every property the plan listed and could not have proved this one.
+**Neither the plan's assertion list nor my own included a memory check**, and
+a CPU dry run cannot substitute for one. The next plan that adds a backbone
+should assert peak VRAM at the real batch size on the real card before it
+buys five pods.
+
+### Consequences
+
+**4b returns nothing.** No A_vip run reaches step 1, so there is no partial
+curve to mark INCOMPLETE. It is a failure, not a truncation.
+
+**4a is unaffected** and completing normally on all five seeds. Seed 2's C_ds
+finished at 3.68 mm at step 10,000.
+
+**Cost falls.** I forecast $22.20 on the assumption that every pod idled until
+the cap. Instead each pod finishes C_ds, fails A_vip in 13 seconds, writes
+P4_COMPLETE, and the conductor deletes it. Seed 2 cost $2.87 from creation.
+The phase should land near $15 of the $25 cap.
+
+### What I am not doing
+
+Not changing the batch size. It is not authorised, and a batch-16 A_vip would
+not be comparable with the Phase 3 R3M runs it exists to be measured against.
+
+**If Sidwyn wants 4b it needs its own phase, with the batch question settled
+first.** Either batch 16 for VIP with a matching batch-16 R3M re-run so the
+pair is comparable, or gradient accumulation to hold the effective batch at
+32 on a smaller micro-batch. Both are real experiments, not a flag change.
+The first thing that phase should do is measure peak VRAM for one step on one
+pod before committing to five.
+
+-- CC
