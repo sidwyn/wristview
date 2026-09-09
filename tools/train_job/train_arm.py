@@ -91,8 +91,13 @@ def _batchnorm_all_eval(module) -> bool:
                if isinstance(m, nn.BatchNorm2d))
 
 
-def _load_r3m_into_backbone(backbone, checkpoint: str) -> dict:
-    """Load R3M resnet18 weights into lerobot's stripped-resnet backbone.
+def _load_pretrained_into_backbone(backbone, checkpoint: str, arch: str,
+                                   prefix: str, inner_key: str | None = None) -> dict:
+    """Load R3M or VIP weights into lerobot's stripped-resnet backbone.
+
+    Both ship a state dict whose names do not match lerobot's positional
+    Sequential. R3M is resnet18 under `convnet.`; VIP is resnet50 under
+    `module.convnet.`, nested inside a `vip` key beside a `global_step`.
 
     lerobot builds the backbone as `nn.Sequential(*resnet18().children()[:-2])`,
     so the module names are positional ("0.weight", "1.running_mean", ...) and
@@ -109,11 +114,24 @@ def _load_r3m_into_backbone(backbone, checkpoint: str) -> dict:
     import torchvision
 
     raw = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    convnet = {k[len("convnet."):]: v for k, v in raw.items()
-               if k.startswith("convnet.")}
+    if inner_key:
+        raw = raw[inner_key]
+    convnet = {k[len(prefix):]: v for k, v in raw.items() if k.startswith(prefix)}
+    if not convnet:
+        raise SystemExit(f"no tensors under prefix {prefix!r} in {checkpoint}")
 
-    model = torchvision.models.resnet18()
-    fresh = nn.Sequential(*list(torchvision.models.resnet18().children())[:-2])
+    # Drop the classifier head. lerobot builds its backbone from
+    # `children()[:-2]`, which discards avgpool and fc, so fc never reaches the
+    # model. R3M simply omits it. VIP ships one, reshaped to its 1024-dim
+    # embedding, and loading it would fail on a size mismatch against
+    # torchvision's 1000-class default. Neither case touches the backbone.
+    dropped_head = sorted(k for k in convnet if k.startswith("fc."))
+    for k in dropped_head:
+        convnet.pop(k)
+
+    build = getattr(torchvision.models, arch)
+    model = build()
+    fresh = nn.Sequential(*list(build().children())[:-2])
     report = model.load_state_dict(convnet, strict=False)
 
     # `fc` is the classifier head. lerobot strips it along with avgpool, so its
@@ -127,7 +145,9 @@ def _load_r3m_into_backbone(backbone, checkpoint: str) -> dict:
     b = fresh.state_dict()["0.weight"]
     return {
         "checkpoint": str(checkpoint),
+        "arch": arch,
         "convnet_keys": len(convnet),
+        "dropped_head_keys": dropped_head,
         "backbone_tensors": len(loaded.state_dict()),
         "missing_keys": list(report.missing_keys),
         "unexpected_keys": list(report.unexpected_keys),
@@ -171,6 +191,10 @@ def _lerobot_version() -> str:
         return version("lerobot")
     except Exception:  # noqa: BLE001
         return "unknown"
+
+
+def _load_r3m_into_backbone(backbone, checkpoint: str) -> dict:
+    return _load_pretrained_into_backbone(backbone, checkpoint, "resnet18", "convnet.")
 
 
 def working_video_backend() -> str:
@@ -227,10 +251,15 @@ def main() -> int:
                          "so a pretrained probe that only fine-tunes cannot tell a "
                          "useless representation from one training destroyed.")
     ap.add_argument("--backbone-weights", default="none",
-                    choices=["none", "imagenet", "r3m"],
+                    choices=["none", "imagenet", "r3m", "vip"],
                     help="none: random init, which is what Phase 1 ran. "
                          "imagenet: torchvision ResNet18_Weights.IMAGENET1K_V1. "
-                         "r3m: the Ego4D-trained R3M resnet18 from surajnair/r3m-18.")
+                         "r3m: the Ego4D-trained R3M resnet18 from surajnair/r3m-18. "
+                         "vip: the Ego4D-trained VIP resnet50, Ma et al. ICLR 2023, "
+                         "a value-implicit objective rather than R3M's.")
+    ap.add_argument("--vip-checkpoint", default=None,
+                    help="local path to the VIP model.pt. Required for "
+                         "--backbone-weights vip so the pod needs no hub access.")
     ap.add_argument("--r3m-checkpoint", default=None,
                     help="local path to R3M pytorch_model.bin. Required for "
                          "--backbone-weights r3m so the pod needs no hub access.")
@@ -239,6 +268,17 @@ def main() -> int:
                     help="build everything, run the three checks and one training "
                          "step, then stop. Proves a configuration on a laptop "
                          "before it is paid for on a GPU.")
+    ap.add_argument("--image-stats", default="imagenet",
+                    choices=["imagenet", "dataset"],
+                    help="imagenet: every camera normalised with ImageNet mean and "
+                         "std, which is what the pretrained weights expect and what "
+                         "Phases 1B, 2 and 3 used. dataset: every camera normalised "
+                         "with its OWN mean and std from the patched stats.json. The "
+                         "rendered wrist channel is darker and bluer than a real "
+                         "camera, so under `imagenet` it reaches the backbone at mean "
+                         "[-1.201, -0.658, -0.175] against the real channel's "
+                         "[0.096, 0.293, 0.207]. `dataset` is the test of whether "
+                         "that offset is what costs the render 0.14 mm.")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--lr-schedule", default="constant",
                     choices=["constant", "cosine"],
@@ -292,11 +332,16 @@ def main() -> int:
     pretrained = None
     if args.backbone_weights == "imagenet":
         pretrained = "ResNet18_Weights.IMAGENET1K_V1"
+    # VIP is a resnet50. lerobot derives the U-Net conditioning width from a
+    # dummy forward through whatever backbone it builds, so naming the right
+    # architecture is all that is needed; 2048 channels instead of 512.
+    vision_backbone = "resnet50" if args.backbone_weights == "vip" else "resnet18"
     cfg = DiffusionConfig(
         input_features=inputs,
         output_features={ACTION: PolicyFeature(type=FeatureType.ACTION, shape=(7,))},
         n_obs_steps=2, horizon=16, n_action_steps=8,
         crop_shape=(340, 600) if cams else None,
+        vision_backbone=vision_backbone,
         device=device,
         pretrained_backbone_weights=pretrained,
         use_group_norm=(args.backbone_weights == "none"),
@@ -331,14 +376,25 @@ def main() -> int:
     image_stats_note = None
     if cams:
         before = {c: np.asarray(stats[c]["std"]).ravel().round(4).tolist() for c in cams}
+        applied = {}
         for c in cams:
             stats[c] = dict(stats[c])
-            stats[c]["mean"] = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(3, 1, 1)
-            stats[c]["std"] = np.array(IMAGENET_STD, dtype=np.float32).reshape(3, 1, 1)
-        image_stats_note = {"dataset_std_replaced": before,
-                            "imagenet_mean": IMAGENET_MEAN,
-                            "imagenet_std": IMAGENET_STD}
-        print(f"  image stats overridden to ImageNet. dataset std was {before}",
+            if args.image_stats == "imagenet":
+                m = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(3, 1, 1)
+                sd = np.array(IMAGENET_STD, dtype=np.float32).reshape(3, 1, 1)
+            else:
+                # Each channel by its own statistics, from the patched
+                # stats.json. Both wrist channels then arrive at the backbone
+                # on the same scale, which is the point of the comparison.
+                m = np.asarray(stats[c]["mean"], dtype=np.float32).reshape(3, 1, 1)
+                sd = np.asarray(stats[c]["std"], dtype=np.float32).reshape(3, 1, 1)
+            stats[c]["mean"], stats[c]["std"] = m, sd
+            applied[c] = {"mean": [round(float(v), 4) for v in m.ravel()],
+                          "std": [round(float(v), 4) for v in sd.ravel()]}
+        image_stats_note = {"mode": args.image_stats,
+                            "dataset_std_before": before,
+                            "applied": applied}
+        print(f"  image stats mode '{args.image_stats}'. applied {json.dumps(applied)}",
               flush=True)
 
     fps = base.meta.fps
@@ -386,6 +442,23 @@ def main() -> int:
             "R3M conv1 is identical to a fresh init, so nothing was loaded")
         print("  R3M load VERIFIED: 120 tensors, no unexpected or missing keys "
               "outside fc, conv1 differs from fresh init", flush=True)
+
+    vip_report = None
+    if cams and args.backbone_weights == "vip":
+        if not args.vip_checkpoint:
+            raise SystemExit("--backbone-weights vip needs --vip-checkpoint")
+        vip_report = _load_pretrained_into_backbone(
+            policy.diffusion.rgb_encoder.backbone, args.vip_checkpoint,
+            "resnet50", "module.convnet.", inner_key="vip")
+        print("  VIP load:", json.dumps(vip_report, indent=2), flush=True)
+        assert not vip_report["unexpected_missing"], (
+            f"VIP load left {vip_report['unexpected_missing']} unfilled")
+        assert not vip_report["unexpected_keys"], "VIP load had unexpected keys"
+        assert vip_report["differs_from_fresh_init"], (
+            "VIP conv1 is identical to a fresh init, so nothing was loaded")
+        print(f"  VIP load VERIFIED: {vip_report['backbone_tensors']} tensors, no "
+              f"unexpected or missing keys outside fc, conv1 differs from fresh init",
+              flush=True)
 
     if cams and args.backbone_weights != "none":
         bn_frozen = _freeze_batchnorm(policy.diffusion.rgb_encoder.backbone)
@@ -601,11 +674,14 @@ def main() -> int:
         "lerobot_version": _lerobot_version(),
         "torch_version": torch.__version__,
         "scored_action_deltas": cfg.action_delta_indices[PRED_START:PRED_STOP],
+        "image_stats": args.image_stats,
         "lr": args.lr,
         "lr_schedule": args.lr_schedule,
         "warmup_steps": args.warmup_steps,
         "eval_every": args.eval_every,
         "backbone_weights": args.backbone_weights,
+        "vision_backbone": vision_backbone,
+        "vip_load": vip_report,
         "use_group_norm": cfg.use_group_norm,
         "batchnorm_modules_frozen": bn_frozen,
         "r3m_load": r3m_report,
